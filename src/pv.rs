@@ -170,7 +170,7 @@ fn view(id: u8, t: f32, fq: usize, pm: &Option<chars::Posed>, pk: &Option<chars:
             let a = lerp(0.2, 1.0, (t - 20.0) / 2.0);
             cam(Vec3::new(a.sin() * 4.8, 1.0, a.cos() * 4.8), mid, 45.0)
         }
-        _ => cam(Vec3::new(0.0, lerp(0.9, 1.1, u), lerp(5.2, 4.0, u)), Vec3::new(0.0, 1.2, 0.0), 42.0),
+        _ => cam(Vec3::new(0.0, lerp(0.8, 1.0, u), lerp(3.4, 2.7, u)), Vec3::new(0.0, 1.3, 0.0), 42.0),
     }
 }
 
@@ -226,8 +226,8 @@ fn fighters(id: u8, t: f32) -> (Option<Place>, Option<Place>, Option<f32>, f32) 
             // aftermath: they have passed each other
             let sway = (t * 2.0).sin() * 0.02;
             (
-                Some(Place { pos: Vec3::new(1.4, 0.0, 0.0), yaw: MIO_YAW, pose: after_pose().with(&[(OX, sway), (OZ, 0.0), (HEAD, 0.0)]) }),
-                Some(Place { pos: Vec3::new(-1.4, 0.0, 0.0), yaw: KAGE_YAW, pose: after_pose() }),
+                Some(Place { pos: Vec3::new(1.0, 0.0, 0.0), yaw: MIO_YAW, pose: after_pose().with(&[(OX, sway), (OZ, 0.0), (HEAD, 0.0)]) }),
+                Some(Place { pos: Vec3::new(-1.0, 0.0, 0.0), yaw: KAGE_YAW, pose: after_pose() }),
                 None,
                 0.0,
             )
@@ -368,6 +368,8 @@ pub fn prerender(atlas: &Atlas, opts: &Options) -> Vec<FilmFrame> {
             base = vec![BLANK; COLS * ROWS];
             match kind {
                 Kind::Void => {
+                    let vc = cam(Vec3::new(0.0, 1.3, lerp(11.0, 8.5, tq / 2.0)), Vec3::new(0.0, 1.4, 0.0), 45.0);
+                    cel::grid(&mut base, &vc, scale3(CYAN, 0.22), 0.3);
                     let k = ease_out(clamp01(tq / 1.3));
                     let n = (COLS as f32 * k) as i32;
                     for i in 0..n {
@@ -380,7 +382,7 @@ pub fn prerender(atlas: &Atlas, opts: &Options) -> Vec<FilmFrame> {
                             put(&mut base, COLS as i32 / 2, 24 + j, '│', scale3(CYAN, 1.0 - j.abs() as f32 / 6.0), true);
                         }
                     }
-                    cel::embers(&mut base, tq, 30, CYAN, WHITE, 0.4);
+                    cel::embers(&mut base, tq, 60, CYAN, WHITE, 0.5);
                 }
                 Kind::EyeM(v) | Kind::EyeK(v) => {
                     let who = if matches!(kind, Kind::EyeM(_)) { Who::Mio } else { Who::Kage };
@@ -411,7 +413,10 @@ pub fn prerender(atlas: &Atlas, opts: &Options) -> Vec<FilmFrame> {
                     let mut back = vec![BLANK; COLS * ROWS];
                     let moon_dir = Vec3::new(-0.12, 0.34, -1.0).normalize();
                     cel::moon(&mut back, &camera, moon_dir, 11.0, [190.0, 215.0, 255.0]);
-                    cel::grid(&mut back, &camera, scale3(CYAN, 0.6), 0.5 + 0.5 * (tq * 4.0).sin());
+                    let gk = if matches!(id, 3 | 4 | 8 | 12 | 14 | 16) { 0.0 } else { 0.6 };
+                    if gk > 0.0 {
+                        cel::grid(&mut back, &camera, scale3(CYAN, gk), 0.5 + 0.5 * (tq * 4.0).sin());
+                    }
                     for (i, c) in back.iter_mut().enumerate() {
                         if frame.gbuffer.cell_coverage(i % COLS, i / COLS) > 0.2 {
                             *c = BLANK;
@@ -426,12 +431,13 @@ pub fn prerender(atlas: &Atlas, opts: &Options) -> Vec<FilmFrame> {
                     if let (Some(a), Some(b), Some(kk)) = (&pm, &pk, sp) {
                         sparks(&mut base, &camera, (a.tip + b.tip) * 0.5, kk, fq as u32 * 17);
                     }
+                    let close = matches!(id, 3 | 4 | 8 | 11 | 12 | 14 | 15 | 16);
                     if speed > 0.0 {
-                        speed_lines(&mut base, fq as u32, 50, 0.32 + 0.1 * h(fq as u32), [200.0, 225.0, 255.0], speed);
+                        speed_lines(&mut base, fq as u32, if close { 16 } else { 50 }, 0.32 + 0.1 * h(fq as u32), [200.0, 225.0, 255.0], speed);
                     }
-                    cel::embers(&mut base, tq, 40, ORANGE, CYAN, 1.0);
+                    cel::embers(&mut base, tq, if close { 10 } else { 40 }, ORANGE, CYAN, 1.0);
                     if paper {
-                        speed_lines(&mut base, fq as u32 + 3, 90, 0.1, WHITE, 1.0);
+                        speed_lines(&mut base, fq as u32 + 3, if close { 35 } else { 90 }, 0.1, WHITE, 1.0);
                     }
                     if id == 19 {
                         let slope = -0.55;
