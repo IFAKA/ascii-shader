@@ -2,6 +2,7 @@
 #![allow(dead_code)] // public API surface is built ahead of its users (lines/marks agents)
 mod baseline;
 mod compose;
+mod film;
 mod glyphs;
 mod lines;
 mod marks;
@@ -68,6 +69,9 @@ struct Cli {
     /// With --dump: also write PNGs
     #[arg(long)]
     png: bool,
+    /// Render the 30 s anime short to this MP4 (needs ffmpeg)
+    #[arg(long)]
+    film: Option<String>,
     /// Run every mode for 240 frames at 160x50 and print metrics
     #[arg(long)]
     bench: bool,
@@ -147,7 +151,11 @@ fn main() {
     opts.marks.w_max = cli.w_max;
     opts.marks.stride = cli.stride.max(1);
 
-    if cli.bench {
+    if let Some(out) = &cli.film {
+        if let Err(e) = film::run(out, &atlas, &cli.font, &opts) {
+            fail(e);
+        }
+    } else if cli.bench {
         bench(&scene, &atlas, &opts, cli.cols.unwrap_or(160), cli.rows.unwrap_or(50));
     } else if let Some(n) = cli.dump {
         dump(&scene, &atlas, &opts, cli.dump_start, n, cli.cols.unwrap_or(160), cli.rows.unwrap_or(50), &cli.out, cli.png);
