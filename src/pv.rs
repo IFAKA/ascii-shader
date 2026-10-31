@@ -434,15 +434,15 @@ pub fn prerender(atlas: &Atlas, opts: &Options) -> Vec<FilmFrame> {
                         speed_lines(&mut base, fq as u32 + 3, 90, 0.1, WHITE, 1.0);
                     }
                     if id == 19 {
-                        let k = clamp01((tq - 22.5) / 0.4);
-                        if k > 0.0 {
-                            cel::slash(&mut base, -0.55, k, WHITE);
-                        }
+                        let slope = -0.55;
                         let sh = clamp01((tq - 23.0) / 0.5);
                         if sh > 0.0 {
-                            base = cel::split(&base, -0.55, ease_out(sh) * 14.0);
-                            let slope = -0.55;
-                            cel::slash(&mut base, slope, 1.0 - sh * 0.0, WHITE);
+                            base = cel::split(&base, slope, ease_out(sh) * 14.0);
+                            cel::embers(&mut base, tq, 60, WHITE, ORANGE, 2.0);
+                        }
+                        let k = clamp01((tq - 22.5) / 0.4);
+                        if k > 0.0 {
+                            cel::slash(&mut base, slope, k, WHITE);
                         }
                     }
                 }

@@ -45,17 +45,20 @@ Struct flickers about 7x less than tone and 12x less than edge. Frame time is un
 
 ![still](docs/still1.png)
 
-## Film: ORB (30 s)
+## Film: ONE CUT (30 s teaser)
 
-A short made only of terminal cells (glyph and colour, one background colour per frame). The same frames play in the terminal and in the MP4.
+A teaser PV for an imaginary anime, made only of terminal cells (glyph and colour, one background colour per frame). Two swordfighters, Mio (cyan) and Kage (orange), kinetic block type, eye close-ups, impact frames, a screen cut in two. Cuts land on the beat (120 BPM). The same frames play in the terminal and in the MP4.
 
 ```
-python3 tools/film_audio.py out/orb.wav                         # soundtrack
-cargo run --release -- --play-film --audio out/orb.wav          # play in the terminal (needs 160x45 cells; Esc quits)
-cargo run --release -- --film out/orb.mp4 --audio out/orb.wav   # same frames as video (needs ffmpeg)
+python3 tools/pv_audio.py out/pv.wav                            # soundtrack (stdlib only)
+cargo run --release -- --play-film --audio out/pv.wav           # play in the terminal (needs 160x45 cells; Esc quits)
+cargo run --release -- --film out/pv.mp4 --audio out/pv.wav     # same frames as video (needs ffmpeg)
+cargo run --release -- --film-stills "out/stills:2.8,14.1,24.5" # PNG stills at these seconds
 ```
 
-Ready-made video: [docs/orb.mp4](docs/orb.mp4).
+Ready-made video: [docs/pv.mp4](docs/pv.mp4). The older 30 s short ORB is still there: add `--story orb` (soundtrack `tools/film_audio.py`, video [docs/orb.mp4](docs/orb.mp4)).
+
+Code: `src/pv.rs` (shot list, choreography), `src/chars.rs` (fighters from primitives, pose angles), `src/cel.rs` (block font, eye cels, slash/split, grid, moon, embers), `src/film.rs` (shared video and terminal output).
 
 ## Credits
 

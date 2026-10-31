@@ -116,7 +116,7 @@ pub fn draw_eye(cells: &mut [Cell], e: &Eye) {
         // u in -1..1 along the eye (outer corner at u = -1). Corner tilt lifts the outer end.
         let shape = (1.0 - u * u).max(0.0).powf(0.9);
         let tilt = -u * e.hgt * 0.16;
-        (tilt - e.open * e.hgt * shape * if u < 0.0 { 1.0 } else { 0.85 }, tilt + e.open * e.hgt * 0.7 * shape)
+        (tilt - e.open * e.hgt * shape * (1.0 - 0.08 * (u + 1.0)), tilt + e.open * e.hgt * 0.7 * shape)
     };
     let (ix, iy) = (e.look.0 * e.w * 0.28, e.look.1 * e.hgt * 0.25);
     let r = e.hgt * 0.95 * e.iris;
