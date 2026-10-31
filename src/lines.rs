@@ -60,7 +60,12 @@ pub struct LineState {
     memory: HashMap<u64, char>,
     /// Cells that held a line glyph last frame (presence hysteresis).
     had: Vec<bool>,
+    prev: Vec<Option<char>>,
 }
+
+/// When the key misses (chain id or bucket changed at a junction), fall back to last frame's glyph in this cell with
+/// this fraction of keep_margin.
+const FALLBACK_MARGIN: f32 = 0.75;
 
 #[derive(Clone, Debug)]
 pub struct LineParams {
@@ -578,12 +583,15 @@ pub fn render_lines(
                 mix(rep.id ^ mix(bucket))
             } >> 1;
             let mut pick = bi;
-            if let Some(&pg) = memory.get(&key)
+            let cell_prev = state.prev.get(entries[i].cell as usize).copied().flatten();
+            let hit = memory.get(&key);
+            if let Some(&pg) = hit.or(cell_prev.as_ref())
                 && let Some(pi) = glyphs.iter().position(|g| g.ch == pg)
-                && costs[pi] <= best + params.keep_margin
-                && costs[pi] <= params.keep_tol
             {
-                pick = pi;
+                let margin = if hit.is_some() { params.keep_margin } else { params.keep_margin * FALLBACK_MARGIN };
+                if costs[pi] <= best + margin && costs[pi] <= params.keep_tol {
+                    pick = pi;
+                }
             }
             Some(Decision { cell: entries[i].cell as usize, key, glyph: glyphs[pick].ch, obj: rep.obj, seg: (es[0].p0, es[0].p1), score: main_len + if was { STAIR_BONUS } else { 0.0 }, weak })
         })
@@ -643,6 +651,7 @@ pub fn render_lines(
         mem.insert(key, d.glyph);
     }
     state.memory = mem;
+    state.prev = out.glyphs.clone();
     state.had = out.glyphs.iter().map(|g| g.is_some()).collect();
     out
 }
@@ -666,6 +675,18 @@ mod tests {
         let atlas = Atlas::load(DEFAULT_FONT, &all_chars()).unwrap();
         let gb = rasterize(scene, cam, cols, rows, 4, 8);
         (render_lines(scene, cam, &gb, &atlas, p, st, cols, rows), cols, rows)
+    }
+
+    #[test]
+    fn cell_fallback_holds_glyphs_when_keys_miss() {
+        let scene = cube_scene();
+        let cam = Camera::look_at(Vec3::new(0.7, 0.5, 3.0), Vec3::ZERO);
+        let mut st = LineState::default();
+        let p = LineParams::default();
+        let (a, _, _) = run(&scene, &cam, &mut st, &p);
+        st.memory.clear();
+        let (b, _, _) = run(&scene, &cam, &mut st, &p);
+        assert_eq!(a.glyphs, b.glyphs);
     }
 
     #[test]
