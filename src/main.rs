@@ -130,6 +130,7 @@ fn bench(scene: &Scene, atlas: &Atlas, base: &Options, cols: usize, rows: usize)
         let mut warm = Renderer::default();
         warm.render(scene, &scene.bench_camera(120), atlas, &opts, cols, rows);
         let mut total = 0.0;
+        let mut classes: Vec<(Vec<char>, Vec<u8>)> = vec![];
         for f in 0..240 {
             let cam = scene.bench_camera(f);
             let t = Instant::now();
@@ -137,9 +138,57 @@ fn bench(scene: &Scene, atlas: &Atlas, base: &Options, cols: usize, rows: usize)
             total += t.elapsed().as_secs_f64() * 1000.0;
             let chars: Vec<char> = frame.cells.iter().map(|c| c.ch).collect();
             m.push(&chars, frame.ids.as_deref());
+            if mode == Mode::Struct && std::env::var_os("ASCII_CLASSIFY").is_some() {
+                classes.push((chars.clone(), cell_classes(&chars, frame.ids.as_deref().unwrap_or(&[]))));
+            }
+        }
+        if !classes.is_empty() {
+            classify_flicker(&classes, cols, rows);
         }
         let respell = if m.has_ids { format!("{:.2}%", m.respell_pct()) } else { "n/a".into() };
         println!("mode={} ms={:.2} changed={:.2}% flicker={:.2}% respell={}", mode.name(), total / 240.0, m.changed_pct(), m.flicker_pct(), respell);
+    }
+}
+
+/// Per cell: 0 blank, 1 line glyph, 2 mark glyph (from the persistent ids whose glyph is the one shown).
+fn cell_classes(chars: &[char], ids: &[(u64, usize, char)]) -> Vec<u8> {
+    let mut c = vec![0u8; chars.len()];
+    for &(k, i, g) in ids {
+        if chars[i] == g {
+            c[i] = if k >> 63 == 1 { if c[i] == 0 { 2 } else { c[i] } } else { 1 };
+        }
+    }
+    c
+}
+
+/// Debug (env ASCII_CLASSIFY): break struct flicker cells down by what A (t-1 = t+1) and B (t) were, and
+/// whether a line was in the 3x3 neighbourhood in any of the three frames.
+fn classify_flicker(classes: &[(Vec<char>, Vec<u8>)], cols: usize, rows: usize) {
+    const N: [&str; 3] = ["blank", "line", "mark"];
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    let mut total = 0usize;
+    for t in 1..classes.len() - 1 {
+        let (ca, cb, cc) = (&classes[t - 1].0, &classes[t].0, &classes[t + 1].0);
+        let (a, b, c) = (&classes[t - 1].1, &classes[t].1, &classes[t + 1].1);
+        for y in 0..rows {
+            for x in 0..cols {
+                let i = y * cols + x;
+                if ca[i] != cc[i] || ca[i] == cb[i] {
+                    continue;
+                }
+                // same class does not mean same char; count only cells where the chars differ is done via class pair,
+                // so mark<->mark and line<->line swaps show up as equal-class pairs
+                let near_line = [a, b, c].iter().any(|f| {
+                    (y.saturating_sub(1)..=(y + 1).min(rows - 1)).any(|yy| (x.saturating_sub(1)..=(x + 1).min(cols - 1)).any(|xx| (yy, xx) != (y, x) && f[yy * cols + xx] == 1))
+                });
+                *counts.entry(format!("{}<->{} near_line={}", N[a[i] as usize], N[b[i] as usize], near_line)).or_default() += 1;
+                total += 1;
+            }
+        }
+    }
+    println!("  flicker cells: {total}");
+    for (k, v) in counts {
+        println!("    {k}: {v}");
     }
 }
 

@@ -73,7 +73,7 @@ Edges come from the **mesh**, not from image edge detection. So every line has a
 - Cell conflict: several anchors in one cell -> highest `weight + 0.2 if it owned this cell last frame` wins.
 
 ### 4. Compose and colour (src/compose.rs)
-- Line glyph beats mark glyph. Output grid: `Vec<Cell { ch: char, fg: (u8,u8,u8), bold }>`.
+- Line glyph beats mark glyph. Marks are also dropped in the 3x3 halo around line cells (halo stays while a line is within 2 columns, held 4 frames), and a cell's mark must be present 2 frames in a row to show and survives 1 missing frame (render.rs). Measured: struct flicker was line zigzag + mark pops, not an interaction. Output grid: `Vec<Cell { ch: char, fg: (u8,u8,u8), bold }>`.
 - Colour flag `--color`: `none`; `tron` (default: black bg, lines in neon cyan or orange per object, marks dim
   teal); `light` (fg brightness from light).
 

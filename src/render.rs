@@ -69,9 +69,77 @@ pub struct Frame {
 pub struct Renderer {
     pub line_state: LineState,
     pub mark_state: MarkState,
+    /// Frames left in each cell's mark-free halo (set while a line is in the 3x3 neighbourhood).
+    halo: Vec<u8>,
+    /// Per-cell mark debounce state.
+    shown: Vec<Debounce>,
 }
 
+/// Mark pops (blank, mark, blank) and dips (mark, blank, mark) are the main remaining flicker, so a mark must
+/// be present `MARK_APPEAR` frames in a row before it shows, and a shown mark survives `MARK_GAP` missing frame.
+const MARK_APPEAR: u8 = 2;
+const MARK_GAP: u8 = 1;
+
+#[derive(Clone, Copy, Default)]
+struct Debounce {
+    run: u8,
+    gap: u8,
+    shown: Option<char>,
+}
+
+impl Debounce {
+    fn step(&mut self, raw: Option<char>) -> Option<char> {
+        if raw.is_some() {
+            self.run = self.run.saturating_add(1);
+            self.gap = 0;
+        } else {
+            self.run = 0;
+            self.gap = self.gap.saturating_add(1);
+        }
+        self.shown = match (self.shown, raw) {
+            (Some(_), Some(g)) => Some(g),
+            (Some(g), None) if self.gap <= MARK_GAP => Some(g),
+            (None, Some(g)) if self.run >= MARK_APPEAR => Some(g),
+            _ => None,
+        };
+        self.shown
+    }
+}
+
+/// A cell stays mark-free for this many frames after its last line neighbour, so the halo does not blink.
+const HALO_HOLD: u8 = 4;
+/// Columns a line may be away and still keep an existing halo alive.
+const HALO_STAY_X: usize = 2;
+
 impl Renderer {
+    /// Hand-drawn ink keeps white space next to lines: drop marks in line cells and their 8 neighbours, with a
+    /// hold time so the halo does not blink when a line cell appears or disappears.
+    fn apply_halo(&mut self, lines: &[Option<char>], marks: &mut [Option<char>], cols: usize, rows: usize) {
+        if self.halo.len() != cols * rows {
+            self.halo = vec![0; cols * rows];
+        }
+        for y in 0..rows {
+            for x in 0..cols {
+                let near = |rx: usize, ry: usize| (y.saturating_sub(ry)..=(y + ry).min(rows - 1)).any(|yy| (x.saturating_sub(rx)..=(x + rx).min(cols - 1)).any(|xx| lines[yy * cols + xx].is_some()));
+                let h = self.halo[y * cols + x];
+                // Enter on a line within 1 cell; once in, stay while a line is within 2 columns; then hold a few frames.
+                self.halo[y * cols + x] = if near(1, 1) || (h > 0 && near(HALO_STAY_X, 1)) { HALO_HOLD } else { h.saturating_sub(1) };
+            }
+        }
+        if self.shown.len() != cols * rows {
+            // A fresh state (first frame, resize) shows marks at once.
+            self.shown = vec![Debounce { run: MARK_APPEAR, ..Debounce::default() }; cols * rows];
+        }
+        for ((m, &h), d) in marks.iter_mut().zip(&self.halo).zip(&mut self.shown) {
+            if h > 0 {
+                *m = None;
+                *d = Debounce::default();
+                continue;
+            }
+            *m = d.step(*m);
+        }
+    }
+
     pub fn render(&mut self, scene: &Scene, cam: &Camera, atlas: &Atlas, opts: &Options, cols: usize, rows: usize) -> Frame {
         let gb = raster::rasterize(scene, cam, cols, rows, opts.sx, opts.sy);
         let mut ids = None;
@@ -80,7 +148,10 @@ impl Renderer {
             Mode::Edge => compose::from_baseline(scene, &gb, &baseline::edge(&gb), opts.color),
             m => {
                 let lo = (m != Mode::Marks).then(|| lines::render_lines(scene, cam, &gb, atlas, &opts.lines, &mut self.line_state, cols, rows));
-                let mo = (m != Mode::Lines).then(|| marks::render_marks(&gb, cam, &opts.marks, &mut self.mark_state, cols, rows));
+                let mut mo = (m != Mode::Lines).then(|| marks::render_marks(&gb, cam, &opts.marks, &mut self.mark_state, cols, rows));
+                if let (Some(l), Some(mk)) = (&lo, &mut mo) {
+                    self.apply_halo(&l.glyphs, &mut mk.glyphs, cols, rows);
+                }
                 let mut v = lo.as_ref().map(|l| l.ids.clone()).unwrap_or_default();
                 if let Some(mk) = &mo {
                     v.extend(mk.ids.iter().map(|&(k, c, g)| (k | (1 << 63), c, g)));
