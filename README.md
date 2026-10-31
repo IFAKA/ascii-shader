@@ -60,6 +60,20 @@ Ready-made video: [docs/pv.mp4](docs/pv.mp4). The older 30 s short ORB is still 
 
 Code: `src/pv.rs` (shot list, choreography), `src/chars.rs` (fighters from primitives, pose angles), `src/cel.rs` (block font, eye cels, slash/split, grid, moon, embers), `src/film.rs` (shared video and terminal output).
 
+### ONE CUT short (10 s, for X / Reddit / Bluesky)
+
+A separate 10 s cut with its own shot list (not a trim of the 30 s PV): a cyan line draws on black (hook), two eyes, the dash, the clash, a slow-motion last strike, a white-out, the slash and split, the title. The last frame is black like the first, so it loops. Same rule: pure terminal cells.
+
+```
+make pvshort                                                    # events -> sound -> sync check -> out/pv-short.mp4 + .gif
+cargo run --release -- --story pvshort --film-events out/ev.json # every visual event with its time in seconds
+python3 tools/pv_short_audio.py out/ev.json out/s.wav           # sound built from that list (stdlib only)
+python3 tools/pv_short_check.py out/ev.json out/s.wav           # sound onset vs picture event, in ms (must be < 1 frame)
+cargo run --release -- --story pvshort --play-film --audio out/s.wav
+```
+
+The events JSON is the single source of truth: `src/pvshort.rs` writes it, the sound script places every sound at the sample of its event (shot cuts, eye opens, dash, clash, slow motion, flash silence, slash, split, title words, settle, fade). Ready-made: [docs/pv-short.mp4](docs/pv-short.mp4), loop [docs/pv-short.gif](docs/pv-short.gif).
+
 ## Credits
 
 Ideas from:

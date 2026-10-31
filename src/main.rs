@@ -78,7 +78,10 @@ struct Cli {
     /// Play the 30 s anime short ORB in this terminal (needs 160x45 cells)
     #[arg(long)]
     play_film: bool,
-    /// Which film: pv (ONE CUT teaser, default) or orb
+    /// With --story pvshort: write the list of visual events (JSON) that the sound is built from
+    #[arg(long)]
+    film_events: Option<String>,
+    /// Which film: pv (ONE CUT teaser, default), pvshort (10 s social short) or orb
     #[arg(long, default_value = "pv")]
     story: String,
     /// Write PNG stills of the film at these times, "DIR:t1,t2,..."
@@ -166,9 +169,19 @@ fn main() {
     opts.marks.w_max = cli.w_max;
     opts.marks.stride = cli.stride.max(1);
 
+    if let Some(p) = &cli.film_events {
+        if cli.story != "pvshort" {
+            fail("--film-events needs --story pvshort");
+        }
+        std::fs::write(p, pv::short::events_json()).unwrap_or_else(|e| fail(format!("{p}: {e}")));
+    }
     if cli.film.is_some() || cli.play_film || cli.film_stills.is_some() {
         eprintln!("drawing the film...");
-        let frames = if cli.story == "orb" { film::prerender(&atlas, &opts) } else { pv::prerender(&atlas, &opts) };
+        let frames = match cli.story.as_str() {
+            "orb" => film::prerender(&atlas, &opts),
+            "pvshort" => pv::short::prerender(&atlas, &opts),
+            _ => pv::prerender(&atlas, &opts),
+        };
         if let Some(spec) = &cli.film_stills {
             let (dir, ts) = spec.split_once(':').unwrap_or((spec, "0"));
             let times: Vec<f32> = ts.split(',').filter_map(|x| x.parse().ok()).collect();
@@ -180,6 +193,8 @@ fn main() {
         if cli.play_film {
             film::play(&frames, cli.audio.as_deref()).unwrap_or_else(|e| fail(e));
         }
+    } else if cli.film_events.is_some() {
+        // events only, nothing to draw
     } else if cli.bench {
         bench(&scene, &atlas, &opts, cli.cols.unwrap_or(160), cli.rows.unwrap_or(50));
     } else if let Some(n) = cli.dump {

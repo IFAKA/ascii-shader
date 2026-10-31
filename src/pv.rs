@@ -9,6 +9,9 @@ use crate::render::{Options, Renderer};
 use crate::scene::{self, Camera, Object, Scene};
 use glam::{Mat4, Vec3, Vec4};
 
+#[path = "pvshort.rs"]
+pub mod short;
+
 const SECS: f32 = 30.0;
 
 #[derive(Clone, Copy)]
