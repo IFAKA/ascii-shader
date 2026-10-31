@@ -434,7 +434,7 @@ struct Decision {
 fn continues(a: &Decision, b: &Decision, horizontal: bool, slack: f32) -> bool {
     let steep = |s: (Vec2, Vec2)| {
         let d = (s.1 - s.0).abs();
-        if horizontal { d.y >= d.x } else { d.x >= 2.0 * d.y }
+        if horizontal { d.y >= 1.5 * d.x } else { d.x >= 2.0 * d.y }
     };
     if !steep(a.seg) || !steep(b.seg) {
         return false;
