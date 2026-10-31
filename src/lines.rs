@@ -30,8 +30,12 @@ const PULL: f32 = 0.85;
 const TOL: f32 = 1.0;
 /// A new line cell whose ink lies within this many glyph pixels of a side border defers to a neighbour that had the line.
 const BORDER_PX: f32 = 3.0;
+/// Staircase merge test slack (glyph px): wider when exactly one of the two cells drew last frame (they were merged,
+/// stay merged), tighter when both did (they were doubled, stay doubled) so the predicate does not toggle.
+const SLACK: f32 = 1.5;
+const TIGHT: f32 = -0.7;
 /// Bonus (glyph px) in the staircase duel for a cell that drew a line last frame.
-const STAIR_BONUS: f32 = 3.0;
+const STAIR_BONUS: f32 = 12.0;
 
 
 
@@ -427,7 +431,7 @@ struct Decision {
 
 /// Does the line leave `a` through the side facing `b` (`b` is the right or lower neighbour) and enter `b` at the
 /// same place? Steep lines are tested against the right neighbour, shallow ones against the lower neighbour.
-fn continues(a: &Decision, b: &Decision, horizontal: bool) -> bool {
+fn continues(a: &Decision, b: &Decision, horizontal: bool, slack: f32) -> bool {
     let steep = |s: (Vec2, Vec2)| {
         let d = (s.1 - s.0).abs();
         if horizontal { d.y >= d.x } else { d.x >= 2.0 * d.y }
@@ -442,9 +446,9 @@ fn continues(a: &Decision, b: &Decision, horizontal: bool) -> bool {
         (if ax.y > bx.y { ax } else { bx }, if b.seg.0.y < b.seg.1.y { b.seg.0 } else { b.seg.1 })
     };
     if horizontal {
-        pa.x > GW as f32 - 1.5 && pb.x < 1.5 && (pa.y - pb.y).abs() < 2.5
+        pa.x > GW as f32 - 1.5 - slack && pb.x < 1.5 + slack && (pa.y - pb.y).abs() < 2.5 + slack
     } else {
-        pa.y > GH as f32 - 1.5 && pb.y < 1.5 && (pa.x - pb.x).abs() < 2.5
+        pa.y > GH as f32 - 1.5 - slack && pb.y < 1.5 + slack && (pa.x - pb.x).abs() < 2.5 + slack
     }
 }
 
@@ -621,6 +625,7 @@ pub fn render_lines(
     }
     let at: HashMap<usize, usize> = decisions.iter().enumerate().map(|(i, d)| (d.cell, i)).collect();
     let mut dead = vec![false; decisions.len()];
+    let mut pairs: Vec<(f32, usize, usize)> = vec![];
     for (i, d) in decisions.iter().enumerate() {
         for (n, horizontal) in [(d.cell + 1, true), (d.cell + cols, false)] {
             if horizontal && n % cols == 0 {
@@ -628,9 +633,18 @@ pub fn render_lines(
             }
             let Some(&j) = at.get(&n) else { continue };
             let e = &decisions[j];
-            if d.obj == e.obj && continues(d, e, horizontal) {
-                if d.score >= e.score { dead[j] = true } else { dead[i] = true }
+            let (hd, he) = (had.get(d.cell).copied().unwrap_or(false), had.get(e.cell).copied().unwrap_or(false));
+            let slack = if hd != he { SLACK } else if hd { TIGHT } else { 0.0 };
+            if d.obj == e.obj && continues(d, e, horizontal, slack) {
+                pairs.push(if d.score >= e.score { (d.score, i, j) } else { (e.score, j, i) });
             }
+        }
+    }
+    // Greedy: the strongest winners decide first; a cell that already lost does not kill its neighbour.
+    pairs.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+    for &(_, w, l) in &pairs {
+        if !dead[w] && !dead[l] {
+            dead[l] = true;
         }
     }
     let mut k = 0;
