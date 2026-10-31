@@ -13,6 +13,8 @@ pub enum LineSet {
 
 const ASCII_SET: &str = "-_|/\\()<>^v',.`+~=[]TL7J";
 const BOX_SET: &str = "─│╱╲╳┌┐└┘├┤┬┴┼╭╮╯╰▁▔▏▕_‾',.";
+/// Scan-line glyphs used by shallow runs (5 heights, top to bottom), with fallbacks if the font lacks them.
+pub const RUN_SET: &str = "⎺⎻─⎼⎽▔‾_▁";
 pub const RAMP: &str = " .:-=+*#%@";
 pub const MARK_CHARS: &str = ".:;-/|\\";
 
@@ -74,7 +76,7 @@ pub struct Atlas {
 /// Every char any mode may draw (used to build the atlas once).
 pub fn all_chars() -> Vec<char> {
     let mut v: Vec<char> = vec![' '];
-    for s in [ASCII_SET, BOX_SET, RAMP, MARK_CHARS] {
+    for s in [ASCII_SET, BOX_SET, RUN_SET, RAMP, MARK_CHARS] {
         v.extend(s.chars());
     }
     v.sort();
@@ -115,6 +117,10 @@ fn analytic_mask(ch: char) -> Option<Vec<f32>> {
     let rect: Option<(f32, f32, f32, f32)> = match ch {
         '▁' => Some((0.0, h - 2.0, w, h)),
         '▔' => Some((0.0, 0.0, w, 2.0)),
+        '⎺' => Some((0.0, 0.0, w, 2.0)),
+        '⎻' => Some((0.0, 4.0, w, 6.0)),
+        '⎼' => Some((0.0, 11.0, w, 13.0)),
+        '⎽' => Some((0.0, h - 2.0, w, h)),
         '▏' => Some((0.0, 0.0, 1.0, h)),
         '▕' => Some((w - 1.0, 0.0, w, h)),
         _ => None,
@@ -196,6 +202,19 @@ pub const DEFAULT_FONT: &str = "/System/Library/Fonts/Menlo.ttc";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_glyph_report() {
+        let a = Atlas::load(DEFAULT_FONT, &all_chars()).unwrap();
+        for ch in RUN_SET.chars().chain("│▏▕".chars()) {
+            let g = a.get(ch).unwrap();
+            let w: f32 = g.ink.iter().map(|i| i.2).sum();
+            let cy: f32 = g.ink.iter().map(|i| i.2 * (i.1 as f32 + 0.5)).sum::<f32>() / w;
+            let cx: f32 = g.ink.iter().map(|i| i.2 * (i.0 as f32 + 0.5)).sum::<f32>() / w;
+            let ys: Vec<u8> = g.ink.iter().map(|i| i.1).collect();
+            println!("{ch} analytic={} missing={} cy={cy:.2} cx={cx:.2} rows {:?}..{:?}", g.analytic, a.missing.contains(&ch), ys.iter().min(), ys.iter().max());
+        }
+    }
 
     #[test]
     fn atlas_has_ink() {

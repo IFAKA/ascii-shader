@@ -62,6 +62,8 @@ pub struct LineState {
     objs: Vec<ObjEdges>,
     crease_deg: f32,
     memory: HashMap<u64, char>,
+    /// Run memory: `(edge id, column or row, orientation)` -> `(row or column, level)` chosen last frame.
+    run_mem: RunMem,
     /// Cells that held a line glyph last frame (presence hysteresis).
     had: Vec<bool>,
     prev: Vec<Option<char>>,
@@ -85,11 +87,71 @@ pub struct LineParams {
     /// ... and its cost <= keep_tol.
     pub keep_tol: f32,
     pub lineset: LineSet,
+    /// Edges whose screen slope (cell units) is at most this are spelled as runs: shallow ones one cell per column,
+    /// steep ones one cell per row. 0 turns runs off.
+    pub run_slope: f32,
+    /// Scan-line glyphs of shallow runs.
+    pub runset: RunSet,
+    /// Hysteresis of a run level, in levels (keep last frame's level unless the line is more than this far from it).
+    pub run_keep: f32,
+    /// Mask corner and tee glyphs in cells with one straight direction.
+    pub straight_mask: bool,
 }
+
+/// Glyphs a shallow run uses, top to bottom.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum RunSet {
+    /// `⎺ ⎻ ─ ⎼ ⎽` (5 heights; Menlo lacks them, the atlas draws them analytically)
+    Scan,
+    /// `‾ ─ _` (3 heights, in every font)
+    Plain,
+}
+
+impl RunSet {
+    fn chars(self) -> &'static [char] {
+        match self {
+            RunSet::Scan => &['⎺', '⎻', '─', '⎼', '⎽'],
+            RunSet::Plain => &['‾', '─', '_'],
+        }
+    }
+}
+
+type RunMem = HashMap<(u64, i32, u8), (i32, u8)>;
+
+/// A run claims a cell: the one cell of a shallow run's column (or of a steep run's row).
+#[derive(Clone, Copy)]
+struct Claim {
+    cell: usize,
+    obj: u16,
+    id: u64,
+    va: u32,
+    vb: u32,
+    glyph: char,
+    key: u64,
+    /// 1 shallow, 2 steep.
+    orient: u8,
+}
+
+/// A visible stretch of one edge, in cell units. `elig`: 1 shallow, 2 steep, 0 not a run.
+#[derive(Clone, Copy)]
+struct Piece {
+    id: u64,
+    obj: u16,
+    va: u32,
+    vb: u32,
+    a: Vec2,
+    b: Vec2,
+    elig: u8,
+}
+
+/// A run keeps a cell it held last frame this far (cells) past its end.
+const END_KEEP: f32 = 0.3;
+/// Hysteresis for a run level: keep last frame's level unless the line is more than this many levels away.
+const LEVEL_KEEP: f32 = 0.6;
 
 impl Default for LineParams {
     fn default() -> Self {
-        LineParams { crease_deg: 35.0, keep_margin: 2.0, keep_ink: KEEP_INK_EXTRA, keep_tol: 5.0, lineset: LineSet::Box }
+        LineParams { crease_deg: 35.0, keep_margin: 2.0, keep_ink: KEEP_INK_EXTRA, keep_tol: 5.0, lineset: LineSet::Box, run_slope: 0.5, runset: RunSet::Scan, run_keep: LEVEL_KEEP, straight_mask: true }
     }
 }
 
@@ -156,6 +218,7 @@ struct Entry {
     p1: Vec2,
     t_mid: f32,
     len_cells: f32,
+    elig: u8,
 }
 
 impl Entry {
@@ -219,7 +282,8 @@ impl Vis<'_> {
 }
 
 /// Entries of one edge (visible pieces clipped to cells).
-fn trace_edge(scene: &Scene, gb: &GBuffer, vis: &Vis, obj: usize, e: &Edge, out: &mut Vec<Entry>) {
+#[allow(clippy::too_many_arguments)]
+fn trace_edge(scene: &Scene, gb: &GBuffer, vis: &Vis, slope: f32, obj: usize, e: &Edge, out: &mut Vec<Entry>, pieces: &mut Vec<Piece>) {
     let o = &scene.objects[obj];
     let m = &o.mesh;
     let wa = o.model.transform_point3(m.verts[e.a as usize]);
@@ -243,6 +307,26 @@ fn trace_edge(scene: &Scene, gb: &GBuffer, vis: &Vis, obj: usize, e: &Edge, out:
     let (sa, sb) = (scr(qa), scr(qb));
     let cell_scale = Vec2::new(1.0 / gb.sx as f32, 1.0 / gb.sy as f32);
     let len_cells = ((sb - sa) * cell_scale).length().min(1.0e4);
+    let dc = ((sb - sa) * cell_scale).abs();
+    let elig: u8 = if slope <= 0.0 {
+        0
+    } else if dc.y <= slope * dc.x {
+        1
+    } else if dc.x <= slope * dc.y {
+        2
+    } else {
+        0
+    };
+    let mut pstart: Option<Vec2> = None;
+    let mut plast = Vec2::ZERO;
+    let close = |pstart: &mut Option<Vec2>, plast: Vec2, pieces: &mut Vec<Piece>| {
+        if let Some(a) = pstart.take()
+            && elig != 0
+            && (plast - a).length() > 0.05
+        {
+            pieces.push(Piece { id: e.id, obj: obj as u16, va: e.a, vb: e.b, a, b: plast, elig });
+        }
+    };
     // Clip the screen segment to the buffer (screen-linear parameter s).
     let Some((s0, s1)) = clip_rect(sa, sb, w, h) else { return };
     let n = (((s1 - s0) * len_cells / STEP).ceil() as usize).clamp(1, 20000);
@@ -263,8 +347,13 @@ fn trace_edge(scene: &Scene, gb: &GBuffer, vis: &Vis, obj: usize, e: &Edge, out:
         let cur = sp * cell_scale;
         if !vis.visible(sp.x, sp.y, d, o16) {
             prev = None;
+            close(&mut pstart, plast, pieces);
             continue;
         }
+        if pstart.is_none() {
+            pstart = Some(cur);
+        }
+        plast = cur;
         if let Some((pp, pt)) = prev {
             let (lo, hi) = (pp.min(cur), pp.max(cur));
             for cy in (lo.y.floor() as i32)..=(hi.y.floor() as i32) {
@@ -287,13 +376,14 @@ fn trace_edge(scene: &Scene, gb: &GBuffer, vis: &Vis, obj: usize, e: &Edge, out:
                             en.p1 = q1;
                             *tl = t1;
                         }
-                        None => mine.push((Entry { cell, obj: o16, id: e.id, va: e.a, vb: e.b, p0: q0, p1: q1, t_mid: 0.0, len_cells }, t0, t1)),
+                        None => mine.push((Entry { cell, obj: o16, id: e.id, va: e.a, vb: e.b, p0: q0, p1: q1, t_mid: 0.0, len_cells, elig }, t0, t1)),
                     }
                 }
             }
         }
         prev = Some((cur, t));
     }
+    close(&mut pstart, plast, pieces);
     out.extend(mine.into_iter().map(|(mut en, tf, tl)| {
         en.t_mid = 0.5 * (tf + tl);
         en
@@ -387,6 +477,31 @@ fn glyph_costs(segs: &[(Vec2, Vec2)], glyphs: &[&Glyph], ink_w: &[f32], costs: &
 /// longest first.
 fn chains(es: &[&Entry]) -> Vec<(f32, usize)> {
     let n = es.len();
+    let root = chain_roots(es);
+    let mut out: Vec<(f32, usize)> = vec![];
+    let mut roots: Vec<usize> = vec![];
+    for i in 0..n {
+        let r = root[i];
+        match roots.iter().position(|&x| x == r) {
+            Some(k) => {
+                out[k].0 += es[i].len_px();
+                if es[i].id < es[out[k].1].id {
+                    out[k].1 = i;
+                }
+            }
+            None => {
+                roots.push(r);
+                out.push((es[i].len_px(), i));
+            }
+        }
+    }
+    out.sort_by(|a, b| b.0.total_cmp(&a.0).then(es[a.1].id.cmp(&es[b.1].id)));
+    out
+}
+
+/// Chain root of every entry (entries of one object that share a mesh vertex are one chain).
+fn chain_roots(es: &[&Entry]) -> Vec<usize> {
+    let n = es.len();
     let mut root: Vec<usize> = (0..n).collect();
     fn find(r: &mut [usize], mut i: usize) -> usize {
         while r[i] != i {
@@ -404,25 +519,179 @@ fn chains(es: &[&Entry]) -> Vec<(f32, usize)> {
             }
         }
     }
-    let mut out: Vec<(f32, usize)> = vec![];
-    let mut roots: Vec<usize> = vec![];
-    for i in 0..n {
-        let r = find(&mut root, i);
-        match roots.iter().position(|&x| x == r) {
-            Some(k) => {
-                out[k].0 += es[i].len_px();
-                if es[i].id < es[out[k].1].id {
-                    out[k].1 = i;
-                }
+    (0..n).map(|i| find(&mut root, i)).collect()
+}
+
+/// How many chains really pass through the cell: each has points well on both sides of the cell centre along its
+/// own direction. Fewer than two means a `┼` would be a lie (a line that only ends at or touches another).
+fn through_count(es: &[&Entry]) -> usize {
+    let roots = chain_roots(es);
+    let mut seen: Vec<usize> = vec![];
+    let centre = Vec2::new(GW as f32 / 2.0, GH as f32 / 2.0);
+    let mut count = 0;
+    for &r in &roots {
+        if seen.contains(&r) {
+            continue;
+        }
+        seen.push(r);
+        let mem: Vec<&&Entry> = es.iter().zip(&roots).filter(|(_, rr)| **rr == r).map(|(e, _)| e).collect();
+        let Some(long) = mem.iter().max_by(|a, b| a.len_px().total_cmp(&b.len_px())) else { continue };
+        let d = (long.p1 - long.p0).normalize_or_zero();
+        let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+        for e in &mem {
+            for p in [e.p0, e.p1] {
+                let t = (p - centre).dot(d);
+                lo = lo.min(t);
+                hi = hi.max(t);
             }
-            None => {
-                roots.push(r);
-                out.push((es[i].len_px(), i));
+        }
+        if lo < -1.5 && hi > 1.5 {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Claims of all runs: a shallow piece takes the cell of every column whose centre it covers, a steep piece the cell
+/// of every row. Returns the claims and the new run memory.
+fn run_claims(
+    pieces: &[Piece],
+    levels: &[(char, f32)],
+    mem: &RunMem,
+    keep: f32,
+    cols: usize,
+    rows: usize,
+) -> (Vec<Claim>, RunMem) {
+    let mut out = vec![];
+    let mut new_mem = HashMap::new();
+    // Mean spacing of the levels, in cell heights.
+    let sp = if levels.len() > 1 { (levels[levels.len() - 1].1 - levels[0].1) / (levels.len() - 1) as f32 } else { 0.25 };
+    for pc in pieces {
+        let (a, b) = if pc.elig == 1 { if pc.a.x <= pc.b.x { (pc.a, pc.b) } else { (pc.b, pc.a) } } else if pc.a.y <= pc.b.y { (pc.a, pc.b) } else { (pc.b, pc.a) };
+        if pc.elig == 1 {
+            let k = (b.y - a.y) / (b.x - a.x).max(1e-6);
+            let c0 = (a.x - 0.5 - END_KEEP).ceil().max(0.0) as i32;
+            for c in c0..cols as i32 {
+                let x = c as f32 + 0.5;
+                if x >= b.x + END_KEEP {
+                    break;
+                }
+                let y = a.y + (x - a.x) * k;
+                let key = (pc.id, c, 1u8);
+                // Presence hysteresis: the ends of a run hold a cell they had last frame a little longer.
+                if !(x >= a.x && x < b.x) && !mem.contains_key(&key) {
+                    continue;
+                }
+                let mut pick: Option<(i32, u8)> = None;
+                if let Some(&(r, l)) = mem.get(&key)
+                    && let Some(&(_, h)) = levels.get(l as usize)
+                    && ((r as f32 + h) - y).abs() <= keep * sp
+                {
+                    pick = Some((r, l));
+                }
+                let (row, lv) = pick.unwrap_or_else(|| {
+                    let r0 = y.floor() as i32;
+                    let mut best = (f32::MAX, 0, 0u8);
+                    for r in r0 - 1..=r0 + 1 {
+                        for (l, &(_, h)) in levels.iter().enumerate() {
+                            let d = ((r as f32 + h) - y).abs();
+                            if d < best.0 {
+                                best = (d, r, l as u8);
+                            }
+                        }
+                    }
+                    (best.1, best.2)
+                });
+                if row < 0 || row >= rows as i32 {
+                    continue;
+                }
+                new_mem.insert(key, (row, lv));
+                out.push(Claim { cell: row as usize * cols + c as usize, obj: pc.obj, id: pc.id, va: pc.va, vb: pc.vb, glyph: levels[lv as usize].0, key: mix(pc.id ^ mix(c as u64 + 0x1000)) >> 1, orient: 1 });
+            }
+        } else {
+            let k = (b.x - a.x) / (b.y - a.y).max(1e-6);
+            let r0 = (a.y - 0.5 - END_KEEP).ceil().max(0.0) as i32;
+            for r in r0..rows as i32 {
+                let y = r as f32 + 0.5;
+                if y >= b.y + END_KEEP {
+                    break;
+                }
+                let x = a.x + (y - a.y) * k;
+                let key = (pc.id, r, 2u8);
+                if !(y >= a.y && y < b.y) && !mem.contains_key(&key) {
+                    continue;
+                }
+                let mut col = x.floor() as i32;
+                if let Some(&(pc_, _)) = mem.get(&key)
+                    && (x - (pc_ as f32 + 0.5)).abs() <= 0.5 + 0.1
+                {
+                    col = pc_;
+                }
+                if col < 0 || col >= cols as i32 {
+                    continue;
+                }
+                new_mem.insert(key, (col, 0));
+                out.push(Claim { cell: r as usize * cols + col as usize, obj: pc.obj, id: pc.id, va: pc.va, vb: pc.vb, glyph: '│', key: mix(pc.id ^ mix(r as u64 + 0x2000)) >> 1, orient: 2 });
             }
         }
     }
-    out.sort_by(|a, b| b.0.total_cmp(&a.0).then(es[a.1].id.cmp(&es[b.1].id)));
-    out
+    (out, new_mem)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Kind {
+    /// One run owns the cell: its glyph.
+    Run,
+    /// Two or more chains meet (or a run is crossed): per-cell scoring over every entry.
+    Junction,
+    /// Only a stub of a run edge: nothing to draw.
+    Drop,
+    /// Ordinary per-cell path.
+    Cell,
+}
+
+/// Direction class of an entry segment (glyph px, 8 x 16 per cell): 1 shallow, 2 steep, 0 diagonal.
+fn entry_orient(e: &Entry) -> u8 {
+    let d = e.p1 - e.p0;
+    let (dx, dy) = (d.x.abs() / GW as f32, d.y.abs() / GH as f32);
+    if dy <= 0.6 * dx {
+        1
+    } else if dx <= 0.6 * dy {
+        2
+    } else {
+        0
+    }
+}
+
+/// Decide how a cell with entries `es` and run claims `cl` is spelled.
+fn cell_kind(es: &[&Entry], cl: &[&Claim], was: bool) -> Kind {
+    let min_len = if was { MIN_KEEP_LEN } else { MIN_NEW_LEN };
+    match cl.len() {
+        0 => {
+            if es.iter().all(|e| e.elig != 0) {
+                let strong = chains(es).iter().filter(|c| c.0 >= min_len).count();
+                if strong >= 2 { Kind::Cell } else { Kind::Drop }
+            } else {
+                Kind::Cell
+            }
+        }
+        1 => {
+            let c = cl[0];
+            let others: Vec<&Entry> = es
+                .iter()
+                .copied()
+                .filter(|e| !(e.obj == c.obj && (e.id == c.id || e.va == c.va || e.va == c.vb || e.vb == c.va || e.vb == c.vb)))
+                .collect();
+            // Lines running the same way as the run merge into it; only a line crossing it makes a junction.
+            let crossing: Vec<&Entry> = others.into_iter().filter(|e| entry_orient(e) != c.orient).collect();
+            if chains(&crossing).iter().any(|ch| ch.0 >= min_len) { Kind::Junction } else { Kind::Run }
+        }
+        _ if cl.iter().all(|c| c.orient == cl[0].orient) => {
+            let crossing: Vec<&Entry> = es.iter().copied().filter(|e| entry_orient(e) != cl[0].orient).collect();
+            if chains(&crossing).iter().any(|ch| ch.0 >= min_len) { Kind::Junction } else { Kind::Run }
+        }
+        _ => Kind::Junction,
+    }
 }
 
 struct Decision {
@@ -512,16 +781,22 @@ pub fn render_lines(
 
     let vis = Vis { gb };
     let objs = &state.objs;
-    let mut entries: Vec<Entry> = cand
+    let traced: Vec<(Vec<Entry>, Vec<Piece>)> = cand
         .par_chunks(64)
-        .flat_map_iter(|chunk| {
-            let mut v = vec![];
+        .map(|chunk| {
+            let (mut v, mut p) = (vec![], vec![]);
             for &(oi, ei) in chunk {
-                trace_edge(scene, gb, &vis, oi, &objs[oi].edges[ei], &mut v);
+                trace_edge(scene, gb, &vis, params.run_slope, oi, &objs[oi].edges[ei], &mut v, &mut p);
             }
-            v
+            (v, p)
         })
         .collect();
+    let mut entries: Vec<Entry> = vec![];
+    let mut pieces: Vec<Piece> = vec![];
+    for (e, p) in traced {
+        entries.extend(e);
+        pieces.extend(p);
+    }
     let min_entry = MIN_ENTRY_LEN;
     entries.retain(|e| e.len_px() >= min_entry);
     entries.sort_unstable_by_key(|e| (e.cell, e.id));
@@ -538,6 +813,36 @@ pub fn render_lines(
         i = j;
     }
 
+    // Run levels: the scan-line glyphs with the height of their ink (fraction of the cell), top to bottom.
+    let mut levels: Vec<(char, f32)> = params
+        .runset
+        .chars()
+        .iter()
+        .filter_map(|&c| {
+            let g = atlas.get(c)?;
+            let w: f32 = g.ink.iter().map(|i| i.2).sum();
+            (w > 0.0).then(|| (c, g.ink.iter().map(|&(_, y, c)| c * (y as f32 + 0.5)).sum::<f32>() / w / GH as f32))
+        })
+        .collect();
+    levels.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let (claims, new_run_mem) = if params.run_slope > 0.0 && !levels.is_empty() { run_claims(&pieces, &levels, &state.run_mem, params.run_keep, cols, rows) } else { (vec![], HashMap::new()) };
+    let mut claim_at: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (i, c) in claims.iter().enumerate() {
+        claim_at.entry(c.cell).or_default().push(i);
+    }
+    let kinds: Vec<Kind> = groups
+        .par_iter()
+        .map(|&(i, j)| {
+            let cell = entries[i].cell as usize;
+            let es: Vec<&Entry> = entries[i..j].iter().collect();
+            let cl: Vec<&Claim> = claim_at.get(&cell).map(|v| v.iter().map(|&k| &claims[k]).collect()).unwrap_or_default();
+            cell_kind(&es, &cl, state.had.get(cell).copied().unwrap_or(false))
+        })
+        .collect();
+    let cross_idx: Vec<usize> = {
+        let g: Vec<&Glyph> = params.lineset.chars().into_iter().filter_map(|c| atlas.get(c)).collect();
+        g.iter().enumerate().filter(|(_, g)| g.ch == '┼' || g.ch == '╳').map(|(i, _)| i).collect()
+    };
     let glyphs: Vec<&Glyph> = params.lineset.chars().into_iter().filter_map(|c| atlas.get(c)).collect();
     let ink_w: Vec<f32> = glyphs.iter().map(|g| g.ink.iter().map(|i| i.2).sum()).collect();
     let memory = &state.memory;
@@ -553,7 +858,11 @@ pub fn render_lines(
     let has_entries: std::collections::HashSet<usize> = groups.iter().map(|&(i, _)| entries[i].cell as usize).collect();
     let decisions: Vec<Decision> = groups
         .par_iter()
-        .filter_map(|&(i, j)| {
+        .zip(kinds.par_iter())
+        .filter_map(|(&(i, j), &kind)| {
+            if kind == Kind::Run || kind == Kind::Drop {
+                return None;
+            }
             let mut es: Vec<&Entry> = entries[i..j].iter().collect();
             es.sort_by(|a, b| b.len_px().total_cmp(&a.len_px()).then(a.id.cmp(&b.id)));
             let was = had.get(entries[i].cell as usize).copied().unwrap_or(false);
@@ -583,6 +892,26 @@ pub fn render_lines(
             let mut costs = vec![];
             let mut inks = vec![];
             glyph_costs(&segs, &glyphs, &ink_w, &mut costs, &mut inks);
+            // One straight direction in the cell: no corner or tee glyph can be right (a comb `┘┘┘` on a slanted line).
+            let d0 = (es[0].p1 - es[0].p0).normalize_or_zero();
+            let straight = es.iter().all(|e| {
+                let d = (e.p1 - e.p0).normalize_or_zero();
+                d.perp_dot(d0).abs() < 0.25
+            });
+            if straight && params.straight_mask {
+                for (gi, g) in glyphs.iter().enumerate() {
+                    if "┌┐└┘├┤┬┴┼╳╭╮╯╰".contains(g.ch) {
+                        costs[gi] = f32::INFINITY;
+                        inks[gi] = f32::INFINITY;
+                    }
+                }
+            }
+            if through_count(&es) < 2 {
+                for &ci in &cross_idx {
+                    costs[ci] = f32::INFINITY;
+                    inks[ci] = f32::INFINITY;
+                }
+            }
             let (bi, &best) = costs.iter().enumerate().min_by(|a, b| a.1.total_cmp(b.1))?;
             if !best.is_finite() {
                 return None;
@@ -666,6 +995,24 @@ pub fn render_lines(
         !dead[k - 1]
     });
 
+    // Runs: their cells, except where the cell went to a junction.
+    {
+        let group_kind: HashMap<usize, Kind> = groups.iter().zip(&kinds).map(|(&(i, _), &k)| (entries[i].cell as usize, k)).collect();
+        let mut taken: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut order: Vec<usize> = (0..claims.len()).collect();
+        order.sort_by_key(|&i| (claims[i].cell, state.prev.get(claims[i].cell).copied().flatten() != Some(claims[i].glyph), claims[i].id));
+        for i in order {
+            let c = &claims[i];
+            if matches!(group_kind.get(&c.cell), Some(Kind::Junction | Kind::Cell)) || !taken.insert(c.cell) {
+                continue;
+            }
+            decisions.push(Decision { cell: c.cell, key: c.key, glyph: c.glyph, obj: c.obj, seg: (Vec2::ZERO, Vec2::ZERO), score: 0.0, weak: false });
+        }
+        // Three steep runs side by side read as a comb: the middle one goes.
+        let vert: std::collections::HashSet<usize> = decisions.iter().filter(|d| d.glyph == '│' && d.seg.1 == Vec2::ZERO).map(|d| d.cell).collect();
+        decisions.retain(|d| !(d.glyph == '│' && d.seg.1 == Vec2::ZERO && d.cell % cols > 0 && d.cell % cols + 1 < cols && vert.contains(&(d.cell - 1)) && vert.contains(&(d.cell + 1))));
+    }
+    state.run_mem = new_run_mem;
     let mut used: HashMap<u64, u64> = HashMap::new();
     let mut mem: HashMap<u64, char> = HashMap::new();
     for d in decisions {
@@ -739,7 +1086,7 @@ mod tests {
         let mut vt = vec![];
         for y in 0..rows {
             let row: String = (0..cols).map(|x| at(x, y).unwrap_or(' ')).collect();
-            let n = row.chars().filter(|&c| c == '─').count();
+            let n = row.chars().filter(|&c| "⎺⎻─⎼⎽".contains(c)).count();
             if n >= 8 {
                 hz.push(y);
             }
@@ -791,12 +1138,77 @@ mod tests {
         assert!(missing.is_empty(), "gaps in the far outline at columns {missing:?} (rows {y0}..{mid})");
     }
 
+    fn levels5() -> Vec<(char, f32)> {
+        vec![('⎺', 0.06), ('⎻', 0.31), ('─', 0.57), ('⎼', 0.75), ('⎽', 0.94)]
+    }
+
+    #[test]
+    fn shallow_run_one_cell_per_column() {
+        // A line dropping about 1.3 rows over 12 columns.
+        let p = Piece { id: 7, obj: 0, va: 1, vb: 2, a: Vec2::new(2.0, 5.1), b: Vec2::new(14.0, 6.4), elig: 1 };
+        let (claims, _) = run_claims(&[p], &levels5(), &HashMap::new(), 0.6, 40, 20);
+        let cols = 40;
+        let mut by_col: Vec<Vec<&Claim>> = vec![vec![]; cols];
+        for c in &claims {
+            by_col[c.cell % cols].push(c);
+        }
+        for x in 2..14 {
+            assert_eq!(by_col[x].len(), 1, "column {x}");
+            assert!("⎺⎻─⎼⎽".contains(by_col[x][0].glyph), "scan-line glyph only, got {}", by_col[x][0].glyph);
+        }
+        assert!(by_col[0].is_empty() && by_col[15].is_empty());
+        // Rows never jump by more than one between neighbouring columns: no holes.
+        for x in 3..14 {
+            let (r0, r1) = ((by_col[x - 1][0].cell / cols) as i32, (by_col[x][0].cell / cols) as i32);
+            assert!((r1 - r0).abs() <= 1, "rows {r0} -> {r1} at column {x}");
+        }
+        assert!(by_col[2][0].cell / cols <= by_col[13][0].cell / cols);
+    }
+
+    #[test]
+    fn steep_run_one_cell_per_row() {
+        let p = Piece { id: 9, obj: 0, va: 1, vb: 2, a: Vec2::new(5.2, 2.0), b: Vec2::new(6.6, 14.0), elig: 2 };
+        let (claims, _) = run_claims(&[p], &levels5(), &HashMap::new(), 0.6, 40, 20);
+        let mut cols_at: Vec<Option<usize>> = vec![None; 20];
+        for c in &claims {
+            assert_eq!(c.glyph, '│');
+            assert!(cols_at[c.cell / 40].replace(c.cell % 40).is_none(), "two cells in one row");
+        }
+        for r in 2..14 {
+            assert!(cols_at[r].is_some(), "row {r} missing");
+        }
+    }
+
+    #[test]
+    fn t_junction_is_not_a_cross() {
+        let mk = |id: u64, va: u32, vb: u32, p0: Vec2, p1: Vec2| Entry { cell: 0, obj: 0, id, va, vb, p0, p1, t_mid: 0.5, len_cells: 3.0, elig: 0 };
+        let (cx, cy) = (GW as f32 / 2.0, GH as f32 / 2.0);
+        let across = mk(1, 1, 2, Vec2::new(0.0, cy), Vec2::new(GW as f32, cy));
+        let stem = mk(2, 3, 4, Vec2::new(cx, cy), Vec2::new(cx, GH as f32)); // ends at the centre: a tee
+        assert_eq!(through_count(&[&across, &stem]), 1);
+        let up = mk(5, 5, 6, Vec2::new(cx, 0.0), Vec2::new(cx, GH as f32));
+        assert_eq!(through_count(&[&across, &up]), 2);
+    }
+
+    #[test]
+    fn chapel_has_no_stray_crosses() {
+        // Whole pipeline: crosses stay rare on the chapel (the old typist drew 26 per frame on average).
+        let scene = Scene::chapel();
+        let cam = scene.bench_camera(130);
+        let (cols, rows) = (160, 50);
+        let atlas = Atlas::load(DEFAULT_FONT, &all_chars()).unwrap();
+        let gb = rasterize(&scene, &cam, cols, rows, 4, 8);
+        let o = render_lines(&scene, &cam, &gb, &atlas, &LineParams::default(), &mut LineState::default(), cols, rows);
+        let crosses = o.glyphs.iter().filter(|g| **g == Some('┼')).count();
+        assert!(crosses <= 20, "{crosses} crosses");
+    }
+
     #[test]
     fn memory_keeps_glyph() {
         let scene = cube_scene();
         let cam = Camera::look_at(Vec3::new(0.0, 0.0, 3.0), Vec3::ZERO);
         let mut st = LineState::default();
-        let mut p = LineParams::default();
+        let mut p = LineParams { run_slope: 0.0, ..LineParams::default() };
         let (o, ..) = run(&scene, &cam, &mut st, &p);
         // Poison the memory: remember '▔' for a key; with a huge margin it must be kept, with zero it must not.
         let &(key, cell, g) = o.ids.iter().find(|i| i.2 == '─').unwrap();

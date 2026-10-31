@@ -35,6 +35,18 @@ struct Cli {
     font: String,
     #[arg(long, value_enum, default_value = "box")]
     lineset: LineSet,
+    /// Runs: edges within this screen slope (cell units) of horizontal/vertical are spelled one cell per column/row (0 = off)
+    #[arg(long, default_value_t = 0.5)]
+    run_slope: f32,
+    /// Run level hysteresis, in levels
+    #[arg(long, default_value_t = 0.6)]
+    run_keep: f32,
+    /// Keep corner/tee glyphs in straight one-direction cells (default off = masked)
+    #[arg(long)]
+    no_straight_mask: bool,
+    /// Scan-line glyphs of shallow runs
+    #[arg(long, value_enum, default_value = "scan")]
+    runset: lines::RunSet,
     #[arg(long, value_enum, default_value = "stipple")]
     marks: MarkStyle,
     #[arg(long, value_enum, default_value = "tron")]
@@ -103,6 +115,10 @@ fn main() {
     let mut opts = Options { mode: cli.mode, color: cli.color, sx: cli.sx.max(1), sy: cli.sy.max(1), ..Options::default() };
     opts.lines.lineset = cli.lineset;
     opts.lines.crease_deg = cli.crease_deg;
+    opts.lines.run_slope = cli.run_slope;
+    opts.lines.runset = cli.runset;
+    opts.lines.straight_mask = !cli.no_straight_mask;
+    opts.lines.run_keep = cli.run_keep;
     opts.lines.keep_margin = cli.keep_margin;
     opts.lines.keep_tol = cli.keep_tol;
     opts.marks.style = cli.marks;
@@ -131,6 +147,7 @@ fn bench(scene: &Scene, atlas: &Atlas, base: &Options, cols: usize, rows: usize)
         warm.render(scene, &scene.bench_camera(120), atlas, &opts, cols, rows);
         let mut total = 0.0;
         let mut classes: Vec<(Vec<char>, Vec<u8>)> = vec![];
+        let mut all_chars: Vec<Vec<char>> = vec![];
         for f in 0..240 {
             let cam = scene.bench_camera(f);
             let t = Instant::now();
@@ -138,15 +155,47 @@ fn bench(scene: &Scene, atlas: &Atlas, base: &Options, cols: usize, rows: usize)
             total += t.elapsed().as_secs_f64() * 1000.0;
             let chars: Vec<char> = frame.cells.iter().map(|c| c.ch).collect();
             m.push(&chars, frame.ids.as_deref());
+            m.look(&chars, cols);
+            if std::env::var_os("ASCII_PAIRS").is_some() {
+                all_chars.push(chars.clone());
+            }
             if mode == Mode::Struct && std::env::var_os("ASCII_CLASSIFY").is_some() {
                 classes.push((chars.clone(), cell_classes(&chars, frame.ids.as_deref().unwrap_or(&[]))));
             }
+        }
+        if mode == Mode::Struct && std::env::var_os("ASCII_PAIRS").is_some() {
+            // Debug: most common A -> B -> A glyph triples.
+            let mut c = std::collections::HashMap::<(char, char), usize>::new();
+            let rows = all_chars[0].len() / cols;
+            for (wi, w) in all_chars.windows(3).enumerate() {
+                for i in 0..w[0].len() {
+                    if w[0][i] == w[2][i] && w[0][i] != w[1][i] {
+                        *c.entry((w[0][i], w[1][i])).or_default() += 1;
+                        if w[0][i] == '─' && w[1][i] == '⎼' && c[&('─', '⎼')] % 25 == 1 {
+                            println!("  sample: window at frame {} row {} col {}", wi, i / cols, i % cols);
+                            let (r0, c0) = (i / cols, i % cols);
+                            for r in r0.saturating_sub(2)..(r0 + 3).min(rows) {
+                                let line: Vec<String> = w.iter().map(|f| (c0.saturating_sub(10)..(c0 + 11).min(cols)).map(|x| f[r * cols + x]).collect::<String>()).collect();
+                                println!("    {}", line.join(" | "));
+                            }
+                        }
+                    }
+                }
+            }
+            let mut v: Vec<_> = c.into_iter().collect();
+            v.sort_by_key(|x| std::cmp::Reverse(x.1));
+            println!("  flicker pairs (A,B): {:?}", &v[..v.len().min(14)]);
         }
         if !classes.is_empty() {
             classify_flicker(&classes, cols, rows);
         }
         let respell = if m.has_ids { format!("{:.3}%", m.respell_pct()) } else { "n/a".into() };
-        println!("mode={} ms={:.2} changed={:.2}% flicker={:.3}% respell={}", mode.name(), total / 240.0, m.changed_pct(), m.flicker_pct(), respell);
+        let (combs, holes, crosses) = m.look_avg();
+        let flat = if m.has_ids { format!("{:.3}%", m.respell_flat_pct()) } else { "n/a".into() };
+        println!(
+            "mode={} ms={:.2} changed={:.2}% flicker={:.3}% respell={} respell_flat={} combs={:.2} holes={:.2} crosses={:.2}",
+            mode.name(), total / 240.0, m.changed_pct(), m.flicker_pct(), respell, flat, combs, holes, crosses
+        );
     }
 }
 

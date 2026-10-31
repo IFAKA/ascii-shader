@@ -11,6 +11,82 @@ pub fn count_flicker(a: &[char], b: &[char], c: &[char]) -> usize {
     (0..a.len()).filter(|&i| a[i] == c[i] && a[i] != b[i]).count()
 }
 
+const COMB: &str = "┘└┐┌┬┴├┤╷╵╴╶";
+const HORIZ: &str = "─⎺⎻⎼⎽_‾▁▔╴╶┌┐└┘┬┴├┤┼";
+const VERT: &str = "│╷╵┌┐└┘├┤┬┴┼";
+const SCAN: &str = "⎺⎻─⎼⎽";
+
+/// Look counts of one frame: `(combs, holes, crosses)`.
+/// combs: runs of 3+ identical corner/tee/stub glyphs, or 3+ `|` / `│`, side by side in a row.
+/// holes: a line glyph followed (same row) by 1-2 blank cells while the line goes on one row up or down after the gap
+/// (shallow), or the same down a column (steep).
+/// crosses: `┼` cells.
+pub fn look_counts(chars: &[char], cols: usize) -> (usize, usize, usize) {
+    let rows = chars.len() / cols;
+    let at = |r: i32, c: i32| -> char {
+        if r < 0 || c < 0 || r as usize >= rows || c as usize >= cols { ' ' } else { chars[r as usize * cols + c as usize] }
+    };
+    let (mut combs, mut holes, mut crosses) = (0, 0, 0);
+    for r in 0..rows as i32 {
+        let mut c = 0;
+        while c < cols as i32 {
+            let ch = at(r, c);
+            let mut n = 1;
+            while c + n < cols as i32 && at(r, c + n) == ch {
+                n += 1;
+            }
+            if n >= 3 && (COMB.contains(ch) || ch == '|' || ch == '│') {
+                combs += 1;
+            }
+            c += n;
+        }
+    }
+    // A shallow line spelled in a row ends and restarts one row up or down after 1-2 blank cells. The end glyph must
+    // sit on the side of the cell the line leaves towards (`⎼⎽_▁` low, `⎺⎻‾▔` high, `─` either), and both sides must
+    // be runs of 2+ (so two separate lines side by side do not count).
+    const LOW: &str = "─⎼⎽_▁┘└┐┌┬┴├┤┼";
+    const HIGH: &str = "─⎺⎻‾▔┘└┐┌┬┴├┤┼";
+    for r in 0..rows as i32 {
+        for c in 0..cols as i32 {
+            let ch = at(r, c);
+            if ch == '┼' {
+                crosses += 1;
+            }
+            // box-drawing only: ascii `-` `|` belong to marks
+            if HORIZ.contains(ch) && HORIZ.contains(at(r, c - 1)) {
+                'h: for g in 1..=2 {
+                    if at(r, c + g) != ' ' {
+                        break;
+                    }
+                    for dr in [-1, 1] {
+                        let leave_ok = if dr == 1 { LOW.contains(ch) } else { HIGH.contains(ch) };
+                        let resume = at(r + dr, c + g + 1);
+                        let resume_ok = if dr == 1 { HIGH.contains(resume) } else { LOW.contains(resume) };
+                        if leave_ok && resume_ok && HORIZ.contains(at(r + dr, c + g + 2)) && (1..=g).all(|k| at(r + dr, c + k) == ' ') {
+                            holes += 1;
+                            break 'h;
+                        }
+                    }
+                }
+            }
+            if VERT.contains(ch) && VERT.contains(at(r - 1, c)) {
+                'v: for g in 1..=2 {
+                    if at(r + g, c) != ' ' {
+                        break;
+                    }
+                    for dc in [-1, 1] {
+                        if (1..=g).all(|k| at(r + k, c + dc) == ' ') && VERT.contains(at(r + g + 1, c + dc)) && VERT.contains(at(r + g + 2, c + dc)) {
+                            holes += 1;
+                            break 'v;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    (combs, holes, crosses)
+}
+
 /// Accumulates the three metrics over a sequence of frames.
 #[derive(Default)]
 pub struct Metrics {
@@ -23,6 +99,10 @@ pub struct Metrics {
     flicker_den: usize,
     respell: usize,
     respell_den: usize,
+    /// Respell that treats the five scan-line glyphs as one (a run stepping a level is motion, not a respell).
+    respell_flat: usize,
+    looks: (usize, usize, usize),
+    frames: usize,
     pub has_ids: bool,
 }
 
@@ -45,6 +125,9 @@ impl Metrics {
                     self.respell_den += 1;
                     if pg != g {
                         self.respell += 1;
+                        if !(SCAN.contains(*pg) && SCAN.contains(*g)) {
+                            self.respell_flat += 1;
+                        }
                     }
                 }
             }
@@ -52,6 +135,23 @@ impl Metrics {
         }
         self.prev2 = self.prev.take();
         self.prev = Some(chars.to_vec());
+    }
+
+    /// Feed the look counts of one frame.
+    pub fn look(&mut self, chars: &[char], cols: usize) {
+        let (a, b, c) = look_counts(chars, cols);
+        self.looks.0 += a;
+        self.looks.1 += b;
+        self.looks.2 += c;
+        self.frames += 1;
+    }
+    /// Per-frame averages `(combs, holes, crosses)`.
+    pub fn look_avg(&self) -> (f64, f64, f64) {
+        let n = self.frames.max(1) as f64;
+        (self.looks.0 as f64 / n, self.looks.1 as f64 / n, self.looks.2 as f64 / n)
+    }
+    pub fn respell_flat_pct(&self) -> f64 {
+        Self::pct(self.respell_flat, self.respell_den)
     }
 
     fn pct(n: usize, d: usize) -> f64 {
@@ -71,6 +171,20 @@ impl Metrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn look_counts_basic() {
+        let f = |rows: &[&str]| -> (usize, usize, usize) {
+            let cols = rows[0].chars().count();
+            look_counts(&rows.concat().chars().collect::<Vec<_>>(), cols)
+        };
+        assert_eq!(f(&["┘┘┘┘ ", "     "]).0, 1);
+        assert_eq!(f(&["──┘┘ "]).0, 0);
+        assert_eq!(f(&["─── ┼"]).2, 1);
+        // step with a gap of one blank column (the end glyph leans down, the restart is high)
+        assert_eq!(f(&["⎻─⎼⎽   ", "     ⎺⎻"]).1, 1);
+        assert_eq!(f(&["────", "    "]).1, 0);
+    }
 
     #[test]
     fn flicker_aba() {
