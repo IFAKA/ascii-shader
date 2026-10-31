@@ -2,7 +2,10 @@
 #![allow(dead_code)] // public API surface is built ahead of its users (lines/marks agents)
 mod baseline;
 mod compose;
+mod cel;
+mod chars;
 mod film;
+mod pv;
 mod glyphs;
 mod lines;
 mod marks;
@@ -75,6 +78,12 @@ struct Cli {
     /// Play the 30 s anime short ORB in this terminal (needs 160x45 cells)
     #[arg(long)]
     play_film: bool,
+    /// Which film: pv (ONE CUT teaser, default) or orb
+    #[arg(long, default_value = "pv")]
+    story: String,
+    /// Write PNG stills of the film at these times, "DIR:t1,t2,..."
+    #[arg(long)]
+    film_stills: Option<String>,
     /// WAV soundtrack for --film (muxed) or --play-film (afplay/ffplay)
     #[arg(long)]
     audio: Option<String>,
@@ -157,9 +166,14 @@ fn main() {
     opts.marks.w_max = cli.w_max;
     opts.marks.stride = cli.stride.max(1);
 
-    if cli.film.is_some() || cli.play_film {
+    if cli.film.is_some() || cli.play_film || cli.film_stills.is_some() {
         eprintln!("drawing the film...");
-        let frames = film::prerender(&atlas, &opts);
+        let frames = if cli.story == "orb" { film::prerender(&atlas, &opts) } else { pv::prerender(&atlas, &opts) };
+        if let Some(spec) = &cli.film_stills {
+            let (dir, ts) = spec.split_once(':').unwrap_or((spec, "0"));
+            let times: Vec<f32> = ts.split(',').filter_map(|x| x.parse().ok()).collect();
+            film::write_stills(&frames, &cli.font, dir, &times).unwrap_or_else(|e| fail(e));
+        }
         if let Some(out) = &cli.film {
             film::write_video(&frames, &cli.font, out, cli.audio.as_deref()).unwrap_or_else(|e| fail(e));
         }

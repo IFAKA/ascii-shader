@@ -218,14 +218,19 @@ pub fn arch_rib(major: f32, depth: f32, width: f32, n: usize) -> Mesh {
 
 /// Cylinder along +y from 0 to `h`. Smooth side normals, flat caps (separate vertices).
 pub fn cylinder(r: f32, h: f32, n: usize) -> Mesh {
+    frustum(r, r, h, n)
+}
+
+/// Tapered cylinder along +y from 0 (radius `r0`) to `h` (radius `r1`). Use a tiny `r1` for a cone.
+pub fn frustum(r0: f32, r1: f32, h: f32, n: usize) -> Mesh {
     let mut verts = vec![];
     for i in 0..n {
         let a = std::f32::consts::TAU * i as f32 / n as f32;
-        verts.push(Vec3::new(r * a.cos(), 0.0, r * a.sin()));
+        verts.push(Vec3::new(r0 * a.cos(), 0.0, r0 * a.sin()));
     }
     for i in 0..n {
         let p = verts[i];
-        verts.push(Vec3::new(p.x, h, p.z));
+        verts.push(Vec3::new(p.x * r1 / r0, h, p.z * r1 / r0));
     }
     let mut tris = vec![];
     for i in 0..n {
@@ -237,9 +242,10 @@ pub fn cylinder(r: f32, h: f32, n: usize) -> Mesh {
     for (y, base) in [(0.0, 2 * n), (h, 3 * n + 1)] {
         let center = base as u32;
         verts.push(Vec3::new(0.0, y, 0.0));
+        let k = if y == 0.0 { 1.0 } else { r1 / r0 };
         for i in 0..n {
             let p = verts[i];
-            verts.push(Vec3::new(p.x, y, p.z));
+            verts.push(Vec3::new(p.x * k, y, p.z * k));
         }
         for i in 0..n {
             let (a, b) = (center + 1 + i as u32, center + 1 + ((i + 1) % n) as u32);
@@ -399,7 +405,7 @@ impl Scene {
         self.objects.push(Object { name: name.into(), mesh, model, class });
     }
 
-    fn empty(cam0: Camera, orbit_target: Vec3) -> Scene {
+    pub fn empty(cam0: Camera, orbit_target: Vec3) -> Scene {
         Scene { objects: vec![], light_dir: Vec3::new(0.4, 0.8, 0.5).normalize(), cam0, orbit_target }
     }
 

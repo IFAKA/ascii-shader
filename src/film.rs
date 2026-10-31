@@ -17,15 +17,15 @@ use std::time::{Duration, Instant};
 
 pub const COLS: usize = 160;
 pub const ROWS: usize = 45;
-const W: usize = COLS * GW;
-const H: usize = ROWS * GH;
-const FPS: usize = 24;
+pub(crate) const W: usize = COLS * GW;
+pub(crate) const H: usize = ROWS * GH;
+pub(crate) const FPS: usize = 24;
 const SECS: f32 = 30.0;
 /// Letterbox: this many blank rows at the top and the bottom.
-const BAR_ROWS: usize = 4;
-const PI: f32 = std::f32::consts::PI;
-const INK: [f32; 3] = [14.0, 10.0, 22.0];
-const PAPER: [f32; 3] = [238.0, 236.0, 230.0];
+pub(crate) const BAR_ROWS: usize = 4;
+pub(crate) const PI: f32 = std::f32::consts::PI;
+pub(crate) const INK: [f32; 3] = [14.0, 10.0, 22.0];
+pub(crate) const PAPER: [f32; 3] = [238.0, 236.0, 230.0];
 
 /// (start s, end s, frames per drawing). Most shots are drawn on twos (12 drawings a second), like cel anime.
 const SHOTS: [(f32, f32, usize); 7] = [(0.0, 5.0, 2), (5.0, 9.0, 2), (9.0, 13.0, 2), (13.0, 17.0, 1), (17.0, 21.5, 1), (21.5, 26.5, 1), (26.5, 30.0, 2)];
@@ -47,7 +47,7 @@ pub struct FilmFrame {
     pub bg: (u8, u8, u8),
 }
 
-fn h(n: u32) -> f32 {
+pub(crate) fn h(n: u32) -> f32 {
     let mut x = n.wrapping_mul(0x9E37_79B9) ^ 0x85EB_CA6B;
     x ^= x >> 15;
     x = x.wrapping_mul(0x2C1B_3C6D);
@@ -56,29 +56,29 @@ fn h(n: u32) -> f32 {
     x ^= x >> 15;
     (x & 0xFF_FFFF) as f32 / 16_777_216.0
 }
-fn lerp(a: f32, b: f32, t: f32) -> f32 {
+pub(crate) fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
-fn clamp01(x: f32) -> f32 {
+pub(crate) fn clamp01(x: f32) -> f32 {
     x.clamp(0.0, 1.0)
 }
-fn smooth(x: f32) -> f32 {
+pub(crate) fn smooth(x: f32) -> f32 {
     let x = clamp01(x);
     x * x * (3.0 - 2.0 * x)
 }
-fn ease_out(x: f32) -> f32 {
+pub(crate) fn ease_out(x: f32) -> f32 {
     1.0 - (1.0 - clamp01(x)).powi(3)
 }
-fn ease_in(x: f32) -> f32 {
+pub(crate) fn ease_in(x: f32) -> f32 {
     clamp01(x).powi(3)
 }
-fn mix3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+pub(crate) fn mix3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
     [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)]
 }
-fn rgb(c: [f32; 3]) -> (u8, u8, u8) {
+pub(crate) fn rgb(c: [f32; 3]) -> (u8, u8, u8) {
     (c[0].clamp(0.0, 255.0) as u8, c[1].clamp(0.0, 255.0) as u8, c[2].clamp(0.0, 255.0) as u8)
 }
-fn scale3(c: [f32; 3], k: f32) -> [f32; 3] {
+pub(crate) fn scale3(c: [f32; 3], k: f32) -> [f32; 3] {
     [c[0] * k, c[1] * k, c[2] * k]
 }
 
@@ -196,7 +196,7 @@ fn state(shot: usize, t: f32, fq: usize) -> State {
 }
 
 /// World point (w=1) or direction (w=0) to cell units (x right, y down) and view depth.
-fn project(cam: &Camera, p: Vec4) -> Option<(f32, f32, f32)> {
+pub(crate) fn project(cam: &Camera, p: Vec4) -> Option<(f32, f32, f32)> {
     let c = cam.proj(COLS, ROWS) * cam.view() * p;
     if c.w <= 0.01 {
         return None;
@@ -204,7 +204,7 @@ fn project(cam: &Camera, p: Vec4) -> Option<(f32, f32, f32)> {
     Some(((c.x / c.w * 0.5 + 0.5) * COLS as f32, (0.5 - c.y / c.w * 0.5) * ROWS as f32, c.w))
 }
 
-fn put(cells: &mut [Cell], x: i32, y: i32, ch: char, fg: [f32; 3], bold: bool) {
+pub(crate) fn put(cells: &mut [Cell], x: i32, y: i32, ch: char, fg: [f32; 3], bold: bool) {
     if x >= 0 && y >= 0 && (x as usize) < COLS && (y as usize) < ROWS {
         cells[y as usize * COLS + x as usize] = Cell { ch, fg: rgb(fg), bold };
     }
@@ -288,7 +288,7 @@ fn paint_orb_glow(cells: &mut [Cell], st: &State) {
     }
 }
 
-fn line_char(dx: f32, dy: f32) -> char {
+pub(crate) fn line_char(dx: f32, dy: f32) -> char {
     let (ax, ay) = (dx.abs(), dy.abs());
     if ay < 0.38 * ax {
         '─'
@@ -302,7 +302,7 @@ fn line_char(dx: f32, dy: f32) -> char {
 }
 
 /// Radial speed lines on blank cells, one glyph per cell along each ray.
-fn speed_lines(cells: &mut [Cell], seed: u32, n: u32, inner: f32, col: [f32; 3], alpha: f32) {
+pub(crate) fn speed_lines(cells: &mut [Cell], seed: u32, n: u32, inner: f32, col: [f32; 3], alpha: f32) {
     let (cx, cy) = (COLS as f32 / 2.0, ROWS as f32 / 2.0);
     for i in 0..n {
         let k = seed.wrapping_mul(131).wrapping_add(i);
@@ -514,7 +514,7 @@ fn compose_frame(base: &[Cell], t: f32, impact: bool) -> FilmFrame {
 }
 
 /// Draw one cell frame with the font into RGB (the same glyphs the terminal shows).
-fn frame_rgb(f: &FilmFrame, atlas: &Atlas, rgb_out: &mut [u8]) {
+pub(crate) fn frame_rgb(f: &FilmFrame, atlas: &Atlas, rgb_out: &mut [u8]) {
     for px in rgb_out.as_chunks_mut::<3>().0 {
         *px = [f.bg.0, f.bg.1, f.bg.2];
     }
@@ -547,7 +547,7 @@ fn frame_rgb(f: &FilmFrame, atlas: &Atlas, rgb_out: &mut [u8]) {
 fn text_atlas(font: &str) -> Result<Atlas, String> {
     let mut chars = glyphs::all_chars();
     chars.extend(' '..='~');
-    chars.extend("█▒─│".chars());
+    chars.extend("█▒─│·".chars());
     chars.sort();
     chars.dedup();
     Atlas::load(font, &chars)
@@ -572,6 +572,24 @@ pub fn write_video(frames: &[FilmFrame], font: &str, out: &str, audio: Option<&s
     drop(pipe);
     let status = ff.wait().map_err(|e| e.to_string())?;
     eprintln!("film: {} frames -> {out} (ffmpeg {status})", frames.len());
+    Ok(())
+}
+
+/// Write PNG stills of the frames at these times (seconds) into `dir`, for looking at the film without playing it.
+pub fn write_stills(frames: &[FilmFrame], font: &str, dir: &str, times: &[f32]) -> Result<(), String> {
+    let atlas = text_atlas(font)?;
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let mut buf = vec![0u8; W * H * 3];
+    for &t in times {
+        let i = ((t * FPS as f32).round() as usize).min(frames.len() - 1);
+        frame_rgb(&frames[i], &atlas, &mut buf);
+        let path = format!("{dir}/t{:05.2}.png", t);
+        let file = std::fs::File::create(&path).map_err(|e| format!("{path}: {e}"))?;
+        let mut enc = png::Encoder::new(io::BufWriter::new(file), W as u32, H as u32);
+        enc.set_color(png::ColorType::Rgb);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header().map_err(|e| e.to_string())?.write_image_data(&buf).map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 

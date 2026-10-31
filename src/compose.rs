@@ -35,6 +35,8 @@ impl ColorMode {
 const CYAN: (u8, u8, u8) = (0, 230, 255);
 const ORANGE: (u8, u8, u8) = (255, 140, 0);
 const TEAL: (u8, u8, u8) = (0, 105, 110);
+const BLUE: (u8, u8, u8) = (60, 120, 215);
+const WHITE: (u8, u8, u8) = (255, 250, 235);
 const GREY: (u8, u8, u8) = (204, 204, 204);
 
 /// What kind of ink a cell is, for colouring.
@@ -49,6 +51,8 @@ fn color(mode: ColorMode, scene: &Scene, gb: &GBuffer, cx: usize, cy: usize, obj
         ColorMode::None => GREY,
         ColorMode::Tron => match kind {
             Kind::Line if obj != NO_OBJ && scene.objects[obj as usize].class == 1 => ORANGE,
+            Kind::Line if obj != NO_OBJ && scene.objects[obj as usize].class == 2 => BLUE,
+            Kind::Line if obj != NO_OBJ && scene.objects[obj as usize].class == 3 => WHITE,
             Kind::Line => CYAN,
             Kind::Mark => TEAL,
         },
