@@ -19,7 +19,8 @@ const SCAN: &str = "⎺⎻─⎼⎽";
 /// Look counts of one frame: `(combs, holes, crosses)`.
 /// combs: runs of 3+ identical corner/tee/stub glyphs, or 3+ `|` / `│`, side by side in a row.
 /// holes: a line glyph followed (same row) by 1-2 blank cells while the line goes on one row up or down after the gap
-/// (shallow), or the same down a column (steep).
+/// (shallow), or the same down a column (steep). The glyph before the gap must stand free (no glyph diagonally or
+/// beside it), so two strands passing each other are not a hole.
 /// crosses: `┼` cells.
 pub fn look_counts(chars: &[char], cols: usize) -> (usize, usize, usize) {
     let rows = chars.len() / cols;
@@ -54,6 +55,9 @@ pub fn look_counts(chars: &[char], cols: usize) -> (usize, usize, usize) {
             }
             // box-drawing only: ascii `-` `|` belong to marks
             if HORIZ.contains(ch) && HORIZ.contains(at(r, c - 1)) {
+                // The end glyph must really end its line: nothing diagonal or vertical touches it above or below
+                // (else it is one strand passing another, not a break).
+                let ends_here = [(-1, 0), (1, 0), (-1, 1), (1, 1)].iter().all(|&(dr, dc)| at(r + dr, c + dc) == ' ');
                 'h: for g in 1..=2 {
                     if at(r, c + g) != ' ' {
                         break;
@@ -62,7 +66,7 @@ pub fn look_counts(chars: &[char], cols: usize) -> (usize, usize, usize) {
                         let leave_ok = if dr == 1 { LOW.contains(ch) } else { HIGH.contains(ch) };
                         let resume = at(r + dr, c + g + 1);
                         let resume_ok = if dr == 1 { HIGH.contains(resume) } else { LOW.contains(resume) };
-                        if leave_ok && resume_ok && HORIZ.contains(at(r + dr, c + g + 2)) && (1..=g).all(|k| at(r + dr, c + k) == ' ') {
+                        if leave_ok && resume_ok && ends_here && HORIZ.contains(at(r + dr, c + g + 2)) && (1..=g).all(|k| at(r + dr, c + k) == ' ') {
                             holes += 1;
                             break 'h;
                         }
@@ -70,12 +74,13 @@ pub fn look_counts(chars: &[char], cols: usize) -> (usize, usize, usize) {
                 }
             }
             if VERT.contains(ch) && VERT.contains(at(r - 1, c)) {
+                let ends_here = [(0, -1), (0, 1), (1, -1), (1, 1)].iter().all(|&(dr, dc)| at(r + dr, c + dc) == ' ');
                 'v: for g in 1..=2 {
                     if at(r + g, c) != ' ' {
                         break;
                     }
                     for dc in [-1, 1] {
-                        if (1..=g).all(|k| at(r + k, c + dc) == ' ') && VERT.contains(at(r + g + 1, c + dc)) && VERT.contains(at(r + g + 2, c + dc)) {
+                        if ends_here && (1..=g).all(|k| at(r + k, c + dc) == ' ') && VERT.contains(at(r + g + 1, c + dc)) && VERT.contains(at(r + g + 2, c + dc)) {
                             holes += 1;
                             break 'v;
                         }
@@ -191,6 +196,8 @@ mod tests {
         // step with a gap of one blank column (the end glyph leans down, the restart is high)
         assert_eq!(f(&["⎻─⎼⎽   ", "     ⎺⎻"]).1, 1);
         assert_eq!(f(&["────", "    "]).1, 0);
+        // the same shape, but the end glyph is touched by a diagonal from below: another strand, not a break
+        assert_eq!(f(&["⎻─⎼⎽   ", "   ╲ ⎺⎻"]).1, 0);
     }
 
     #[test]
