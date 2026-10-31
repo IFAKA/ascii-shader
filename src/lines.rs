@@ -27,7 +27,7 @@ const MIN_KEEP_LEN: f32 = 2.0;
 /// quantise to the cell grid (plain `│ ─ ╱ ╲`) instead of hopping between sub-cell glyphs.
 const PULL: f32 = 0.85;
 /// Distances up to this (glyph pixels) cost nothing: strokes are about 2 px wide.
-const TOL: f32 = 1.0;
+const TOL: f32 = 1.25;
 /// A new line cell whose ink lies within this many glyph pixels of a side border defers to a neighbour that had the line.
 const BORDER_PX: f32 = 3.0;
 /// Staircase merge test slack (glyph px): wider when exactly one of the two cells drew last frame (they were merged,
