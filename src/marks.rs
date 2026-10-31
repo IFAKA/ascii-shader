@@ -98,12 +98,19 @@ fn mix(mut x: u64) -> u64 {
 }
 
 #[inline]
+fn cell_hash_base(obj: u16, level: i32) -> u64 {
+    mix(obj as u64 ^ ((level as i64 as u64 & 0xffff) << 16) ^ 0x9e37_79b9_0000_0000)
+}
+
+#[inline]
+fn cell_hash_from(h: u64, c: [i32; 3]) -> u64 {
+    let k = (c[0] as u32 as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ (c[1] as u32 as u64).wrapping_mul(0xc2b2_ae3d_27d4_eb4f) ^ (c[2] as u32 as u64).wrapping_mul(0x1656_67b1_9e37_79f9);
+    mix(h ^ k)
+}
+
+#[inline]
 fn cell_hash(obj: u16, level: i32, c: [i32; 3]) -> u64 {
-    let mut h = mix(obj as u64 ^ ((level as i64 as u64 & 0xffff) << 16) ^ 0x9e37_79b9_0000_0000);
-    for v in c {
-        h = mix(h ^ (v as u32 as u64).wrapping_mul(0x9e3779b97f4a7c15));
-    }
-    h
+    cell_hash_from(cell_hash_base(obj, level), c)
 }
 
 /// Jitter in [0,1)^3 from a cell hash.
@@ -121,18 +128,41 @@ fn id_rand(id: u64) -> f32 {
 }
 
 /// Nearest jittered point of the 3x3x3 neighbourhood for grid frequency `inv = 1/cellsize`.
-/// Returns the winning integer cell.
+/// Returns the winning integer cell. Cells are tried centre first and skipped (without hashing) when even the
+/// closest possible jitter could not beat the best so far, so the result is the same as a full scan.
 #[inline]
-fn nearest_cell(p: Vec3, inv: f32, obj: u16, level: i32) -> [i32; 3] {
+fn nearest_cell(p: Vec3, inv: f32, obj: u16, level: i32, hint: Option<[i32; 3]>) -> [i32; 3] {
+    const ORDER: [i32; 3] = [0, -1, 1];
     let q = p * inv;
     let base = [q.x.floor() as i32, q.y.floor() as i32, q.z.floor() as i32];
+    let f = [q.x - base[0] as f32, q.y - base[1] as f32, q.z - base[2] as f32];
+    // Smallest possible squared offset along an axis for cell offset 0, -1, +1 (index by ORDER position).
+    let lb = |a: usize| [0.0, f[a] * f[a], (1.0 - f[a]) * (1.0 - f[a])];
+    let (lx, ly, lz) = (lb(0), lb(1), lb(2));
+    let h0 = cell_hash_base(obj, level);
     let mut best = f32::MAX;
     let mut win = base;
-    for dz in -1..=1 {
-        for dy in -1..=1 {
-            for dx in -1..=1 {
+    // The winner of the pixel next door is usually still the winner: it gives a tight bound to prune with.
+    if let Some(c) = hint
+        && (0..3).all(|a| (c[a] - base[a]).abs() <= 1)
+    {
+        let j = jitter(cell_hash_from(h0, c));
+        let (ex, ey, ez) = (c[0] as f32 + j[0] - q.x, c[1] as f32 + j[1] - q.y, c[2] as f32 + j[2] - q.z);
+        best = ex * ex + ey * ey + ez * ez;
+        win = c;
+    }
+    for (iz, &dz) in ORDER.iter().enumerate() {
+        for (iy, &dy) in ORDER.iter().enumerate() {
+            let lyz = ly[iy] + lz[iz];
+            if lyz >= best {
+                continue;
+            }
+            for (ix, &dx) in ORDER.iter().enumerate() {
+                if lx[ix] + lyz >= best {
+                    continue;
+                }
                 let c = [base[0] + dx, base[1] + dy, base[2] + dz];
-                let j = jitter(cell_hash(obj, level, c));
+                let j = jitter(cell_hash_from(h0, c));
                 let ex = c[0] as f32 + j[0] - q.x;
                 let ey = c[1] as f32 + j[1] - q.y;
                 let ez = c[2] as f32 + j[2] - q.z;
@@ -185,8 +215,31 @@ const CELL_MARGIN: f32 = 0.3;
 /// Frames an unseen anchor stays in the state.
 const KEEP_FRAMES: u32 = 45;
 
+/// Pixels next to each other mostly vote for the same anchor, so each level keeps a running sum for its latest
+/// anchor and only touches the map when the anchor changes.
+type Runs = [(u64, Acc); 9];
+/// Last winning grid cell per level, with the object and level it belongs to.
+type Hints = [(u16, i32, [i32; 3]); 9];
+
+#[inline]
+fn flush(map: &mut AccMap, id: u64, a: &Acc) {
+    if a.w > 0.0 {
+        let e = map.entry(id).or_default();
+        e.obj = a.obj;
+        e.cov += a.cov;
+        e.w += a.w;
+        e.x += a.x;
+        e.y += a.y;
+        e.light += a.light;
+        e.c2 += a.c2;
+        e.s2 += a.s2;
+    }
+}
+
 fn vote_row(gb: &GBuffer, params: &MarkParams, cy: usize) -> AccMap {
     let mut map = AccMap::default();
+    let mut runs: Runs = [(0, Acc::default()); 9];
+    let mut hints: Hints = [(NO_OBJ, 0, [0; 3]); 9];
     let n = params.n_levels.max(0);
     let sigma = (0.4 * n as f32).max(0.2);
     let st = params.stride.max(1);
@@ -200,11 +253,14 @@ fn vote_row(gb: &GBuffer, params: &MarkParams, cy: usize) -> AccMap {
             if o != NO_OBJ
                 && let Some((dpx, dpy)) = gradients(gb, x, y, i)
             {
-                vote_pixel(gb, params, &mut map, i, o, (dpx, dpy), n, sigma, (x, y), st);
+                vote_pixel(gb, params, &mut map, &mut runs, &mut hints, i, o, (dpx, dpy), n, sigma, (x, y), st);
             }
             x += st;
         }
         y += st;
+    }
+    for (id, a) in &runs {
+        flush(&mut map, *id, a);
     }
     map
 }
@@ -235,7 +291,7 @@ fn gradients(gb: &GBuffer, x: usize, y: usize, i: usize) -> Option<(Vec3, Vec3)>
 
 #[allow(clippy::too_many_arguments)]
 #[inline]
-fn vote_pixel(gb: &GBuffer, params: &MarkParams, map: &mut AccMap, i: usize, o: u16, d: (Vec3, Vec3), n: i32, sigma: f32, xy: (usize, usize), st: usize) {
+fn vote_pixel(gb: &GBuffer, params: &MarkParams, map: &mut AccMap, runs: &mut Runs, hints: &mut Hints, i: usize, o: u16, d: (Vec3, Vec3), n: i32, sigma: f32, xy: (usize, usize), st: usize) {
     let (dpx, dpy) = d;
     let area = dpx.cross(dpy).length() * (st * st) as f32;
     // Object-space size of one terminal cell, as the geometric mean of both directions.
@@ -256,8 +312,9 @@ fn vote_pixel(gb: &GBuffer, params: &MarkParams, map: &mut AccMap, i: usize, o: 
     let (c2, s2) = if det > 1e-20 {
         let (r0, r1) = (dpx.dot(t), dpy.dot(t));
         let (ux, uy) = ((c * r0 - b * r1) / det, (a * r1 - b * r0) / det);
-        let th = uy.atan2(ux) * 2.0;
-        (th.cos(), th.sin())
+        // cos and sin of twice the angle of (ux, uy), without trig calls.
+        let m = ux * ux + uy * uy;
+        if m > 1e-30 { ((ux * ux - uy * uy) / m, 2.0 * ux * uy / m) } else { (1.0, 0.0) }
     } else {
         (0.0, 0.0)
     };
@@ -278,9 +335,16 @@ fn vote_pixel(gb: &GBuffer, params: &MarkParams, map: &mut AccMap, i: usize, o: 
         }
         let l = (l0 + k).clamp(-14, 14);
         let size = (l as f32).exp2() / params.f;
-        let cell = nearest_cell(p, 1.0 / size, o, l);
+        let h = &mut hints[(k + n) as usize % 9];
+        let cell = nearest_cell(p, 1.0 / size, o, l, (h.0 == o && h.1 == l).then_some(h.2));
+        *h = (o, l, cell);
         let id = cell_hash(o, l, cell);
-        let e = map.entry(id).or_default();
+        let slot = &mut runs[(k + n) as usize % 9];
+        if slot.0 != id {
+            flush(map, slot.0, &slot.1);
+            *slot = (id, Acc::default());
+        }
+        let e = &mut slot.1;
         e.obj = o;
         e.cov += w * area / (size * size);
         e.w += w;
@@ -443,8 +507,8 @@ mod tests {
     #[test]
     fn same_point_same_id() {
         let p = Vec3::new(1.23, 0.4, -2.7);
-        let a = nearest_cell(p, 2.0, 3, 1);
-        let b = nearest_cell(p, 2.0, 3, 1);
+        let a = nearest_cell(p, 2.0, 3, 1, None);
+        let b = nearest_cell(p, 2.0, 3, 1, None);
         assert_eq!(a, b);
         assert_eq!(cell_hash(3, 1, a), cell_hash(3, 1, b));
         assert_ne!(cell_hash(3, 1, a), cell_hash(4, 1, a));
