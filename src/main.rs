@@ -145,8 +145,8 @@ fn bench(scene: &Scene, atlas: &Atlas, base: &Options, cols: usize, rows: usize)
         if !classes.is_empty() {
             classify_flicker(&classes, cols, rows);
         }
-        let respell = if m.has_ids { format!("{:.2}%", m.respell_pct()) } else { "n/a".into() };
-        println!("mode={} ms={:.2} changed={:.2}% flicker={:.2}% respell={}", mode.name(), total / 240.0, m.changed_pct(), m.flicker_pct(), respell);
+        let respell = if m.has_ids { format!("{:.3}%", m.respell_pct()) } else { "n/a".into() };
+        println!("mode={} ms={:.2} changed={:.2}% flicker={:.3}% respell={}", mode.name(), total / 240.0, m.changed_pct(), m.flicker_pct(), respell);
     }
 }
 

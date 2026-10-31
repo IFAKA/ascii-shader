@@ -578,17 +578,21 @@ pub fn render_lines(
             if !best.is_finite() {
                 return None;
             }
-            let bucket = (rep.t_mid * rep.len_cells * 2.0).round() as i64 as u64;
-            let key = if ch.len() >= 2 {
-                let (ia, ib) = (rep.id, es[ch[1].1].id);
-                let (a, b) = (ia.min(ib), ia.max(ib));
-                mix(a ^ mix(b ^ mix(bucket)))
-            } else {
-                mix(rep.id ^ mix(bucket))
-            } >> 1;
+            let bucket = (rep.t_mid * rep.len_cells * 2.0).round() as i64;
+            let key_at = |bk: i64| -> u64 {
+                let bk = bk as u64;
+                if ch.len() >= 2 {
+                    let (ia, ib) = (rep.id, es[ch[1].1].id);
+                    let (a, b) = (ia.min(ib), ia.max(ib));
+                    mix(a ^ mix(b ^ mix(bk))) >> 1
+                } else {
+                    mix(rep.id ^ mix(bk)) >> 1
+                }
+            };
+            let key = key_at(bucket);
             let mut pick = bi;
             let cell_prev = state.prev.get(entries[i].cell as usize).copied().flatten();
-            let hit = memory.get(&key);
+            let hit = memory.get(&key).or_else(|| memory.get(&key_at(bucket - 1))).or_else(|| memory.get(&key_at(bucket + 1)));
             if let Some(&pg) = hit.or(cell_prev.as_ref())
                 && let Some(pi) = glyphs.iter().position(|g| g.ch == pg)
             {
