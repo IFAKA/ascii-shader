@@ -30,6 +30,8 @@ const PULL: f32 = 0.85;
 const TOL: f32 = 1.0;
 /// A new line cell whose ink lies within this many glyph pixels of a side border defers to a neighbour that had the line.
 const BORDER_PX: f32 = 3.0;
+/// Bonus (glyph px) in the staircase duel for a cell that drew a line last frame.
+const STAIR_BONUS: f32 = 3.0;
 
 
 
@@ -132,6 +134,9 @@ struct Entry {
     cell: u32,
     obj: u16,
     id: u64,
+    /// Mesh vertices of the edge (entries of one object sharing a vertex are one chain).
+    va: u32,
+    vb: u32,
     /// Segment in glyph pixel coordinates.
     p0: Vec2,
     p1: Vec2,
@@ -262,12 +267,13 @@ fn trace_edge(scene: &Scene, gb: &GBuffer, vis: &Vis, obj: usize, e: &Edge, out:
                     let q1 = (pp + (cur - pp) * c1 - origin) * g;
                     let (t0, t1) = (pt + (t - pt) * c0, pt + (t - pt) * c1);
                     let cell = (cy * cols + cx) as u32;
-                    match mine.last_mut() {
-                        Some((en, _, tl)) if en.cell == cell => {
+                    // A step can touch several cells, so the matching entry is not always the last one.
+                    match mine.iter_mut().rev().take(4).find(|(en, _, _)| en.cell == cell) {
+                        Some((en, _, tl)) => {
                             en.p1 = q1;
                             *tl = t1;
                         }
-                        _ => mine.push((Entry { cell, obj: o16, id: e.id, p0: q0, p1: q1, t_mid: 0.0, len_cells }, t0, t1)),
+                        None => mine.push((Entry { cell, obj: o16, id: e.id, va: e.a, vb: e.b, p0: q0, p1: q1, t_mid: 0.0, len_cells }, t0, t1)),
                     }
                 }
             }
@@ -359,11 +365,82 @@ fn glyph_costs(segs: &[(Vec2, Vec2)], glyphs: &[&Glyph], ink_w: &[f32], costs: &
     }
 }
 
+/// Chains of entries in one cell: entries of one object that share a mesh vertex (a smooth mesh's silhouette is a
+/// zigzag of short edges). Returns `(total length in px, representative entry = smallest edge id)` per chain,
+/// longest first.
+fn chains(es: &[&Entry]) -> Vec<(f32, usize)> {
+    let n = es.len();
+    let mut root: Vec<usize> = (0..n).collect();
+    fn find(r: &mut [usize], mut i: usize) -> usize {
+        while r[i] != i {
+            r[i] = r[r[i]];
+            i = r[i];
+        }
+        i
+    }
+    for i in 0..n {
+        for j in i + 1..n {
+            let (a, b) = (es[i], es[j]);
+            if a.obj == b.obj && (a.va == b.va || a.va == b.vb || a.vb == b.va || a.vb == b.vb) {
+                let (ri, rj) = (find(&mut root, i), find(&mut root, j));
+                root[ri] = rj;
+            }
+        }
+    }
+    let mut out: Vec<(f32, usize)> = vec![];
+    let mut roots: Vec<usize> = vec![];
+    for i in 0..n {
+        let r = find(&mut root, i);
+        match roots.iter().position(|&x| x == r) {
+            Some(k) => {
+                out[k].0 += es[i].len_px();
+                if es[i].id < es[out[k].1].id {
+                    out[k].1 = i;
+                }
+            }
+            None => {
+                roots.push(r);
+                out.push((es[i].len_px(), i));
+            }
+        }
+    }
+    out.sort_by(|a, b| b.0.total_cmp(&a.0).then(es[a.1].id.cmp(&es[b.1].id)));
+    out
+}
+
 struct Decision {
     cell: usize,
     key: u64,
     glyph: char,
     obj: u16,
+    /// Longest entry of the cell (glyph px) and how much it counts in a duel with a neighbour.
+    seg: (Vec2, Vec2),
+    score: f32,
+    /// Shorter than the presence threshold: kept only as a bridge between two strong neighbours.
+    weak: bool,
+}
+
+/// Does the line leave `a` through the side facing `b` (`b` is the right or lower neighbour) and enter `b` at the
+/// same place? Steep lines are tested against the right neighbour, shallow ones against the lower neighbour.
+fn continues(a: &Decision, b: &Decision, horizontal: bool) -> bool {
+    let steep = |s: (Vec2, Vec2)| {
+        let d = (s.1 - s.0).abs();
+        if horizontal { d.y >= d.x } else { d.x >= 2.0 * d.y }
+    };
+    if !steep(a.seg) || !steep(b.seg) {
+        return false;
+    }
+    let (ax, bx) = (a.seg.0, a.seg.1);
+    let (pa, pb) = if horizontal {
+        (if ax.x > bx.x { ax } else { bx }, if b.seg.0.x < b.seg.1.x { b.seg.0 } else { b.seg.1 })
+    } else {
+        (if ax.y > bx.y { ax } else { bx }, if b.seg.0.y < b.seg.1.y { b.seg.0 } else { b.seg.1 })
+    };
+    if horizontal {
+        pa.x > GW as f32 - 1.5 && pb.x < 1.5 && (pa.y - pb.y).abs() < 2.5
+    } else {
+        pa.y > GH as f32 - 1.5 && pb.y < 1.5 && (pa.x - pb.x).abs() < 2.5
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -463,7 +540,10 @@ pub fn render_lines(
             let mut es: Vec<&Entry> = entries[i..j].iter().collect();
             es.sort_by(|a, b| b.len_px().total_cmp(&a.len_px()).then(a.id.cmp(&b.id)));
             let was = had.get(entries[i].cell as usize).copied().unwrap_or(false);
-            if es[0].len_px() < if was { MIN_KEEP_LEN } else { MIN_NEW_LEN } {
+            let ch = chains(&es);
+            let (main_len, rep) = (ch[0].0, es[ch[0].1]);
+            let weak = main_len < if was { MIN_KEEP_LEN } else { MIN_NEW_LEN };
+            if weak && main_len < MIN_ENTRY_LEN {
                 return None;
             }
             // Border hysteresis: a new line cell hugging the border next to a cell that already drew this line
@@ -489,12 +569,13 @@ pub fn render_lines(
             if !best.is_finite() {
                 return None;
             }
-            let bucket = (es[0].t_mid * es[0].len_cells * 2.0).round() as i64 as u64;
-            let key = if es.len() >= 2 {
-                let (a, b) = (es[0].id.min(es[1].id), es[0].id.max(es[1].id));
+            let bucket = (rep.t_mid * rep.len_cells * 2.0).round() as i64 as u64;
+            let key = if ch.len() >= 2 {
+                let (ia, ib) = (rep.id, es[ch[1].1].id);
+                let (a, b) = (ia.min(ib), ia.max(ib));
                 mix(a ^ mix(b ^ mix(bucket)))
             } else {
-                mix(es[0].id ^ mix(bucket))
+                mix(rep.id ^ mix(bucket))
             } >> 1;
             let mut pick = bi;
             if let Some(&pg) = memory.get(&key)
@@ -504,9 +585,51 @@ pub fn render_lines(
             {
                 pick = pi;
             }
-            Some(Decision { cell: entries[i].cell as usize, key, glyph: glyphs[pick].ch, obj: es[0].obj })
+            Some(Decision { cell: entries[i].cell as usize, key, glyph: glyphs[pick].ch, obj: rep.obj, seg: (es[0].p0, es[0].p1), score: main_len + if was { STAIR_BONUS } else { 0.0 }, weak })
         })
         .collect();
+
+    // Staircases: a slanted line that crosses a cell border gives a piece in both neighbours (`││`). Keep the
+    // longer one (a cell that drew last frame gets a bonus).
+    let mut decisions = decisions;
+    // Bridges: a cell with only a short piece (a line clipping a cell corner) still draws if the line goes on in
+    // two neighbouring cells, so the outline has no one-cell holes.
+    {
+        let strong: HashMap<usize, u16> = decisions.iter().filter(|d| !d.weak).map(|d| (d.cell, d.obj)).collect();
+        decisions.retain(|d| {
+            if !d.weak {
+                return true;
+            }
+            let (cx, cy) = ((d.cell % cols) as i32, (d.cell / cols) as i32);
+            let n = (-1..=1)
+                .flat_map(|dy| (-1..=1).map(move |dx| (dx, dy)))
+                .filter(|&(dx, dy)| {
+                    let (x, y) = (cx + dx, cy + dy);
+                    (dx, dy) != (0, 0) && x >= 0 && y >= 0 && x < cols as i32 && y < rows as i32 && strong.get(&(y as usize * cols + x as usize)) == Some(&d.obj)
+                })
+                .count();
+            n >= 2
+        });
+    }
+    let at: HashMap<usize, usize> = decisions.iter().enumerate().map(|(i, d)| (d.cell, i)).collect();
+    let mut dead = vec![false; decisions.len()];
+    for (i, d) in decisions.iter().enumerate() {
+        for (n, horizontal) in [(d.cell + 1, true), (d.cell + cols, false)] {
+            if horizontal && n % cols == 0 {
+                continue;
+            }
+            let Some(&j) = at.get(&n) else { continue };
+            let e = &decisions[j];
+            if d.obj == e.obj && continues(d, e, horizontal) {
+                if d.score >= e.score { dead[j] = true } else { dead[i] = true }
+            }
+        }
+    }
+    let mut k = 0;
+    decisions.retain(|_| {
+        k += 1;
+        !dead[k - 1]
+    });
 
     let mut used: HashMap<u64, u64> = HashMap::new();
     let mut mem: HashMap<u64, char> = HashMap::new();
@@ -529,7 +652,7 @@ mod tests {
     use super::*;
     use crate::glyphs::{DEFAULT_FONT, all_chars};
     use crate::raster::rasterize;
-    use crate::scene::{Object, cube};
+    use crate::scene::{Object, cube, torus};
     use glam::Mat4;
 
     fn cube_scene() -> Scene {
@@ -568,6 +691,43 @@ mod tests {
         }
         assert!(hz.len() >= 2, "horizontal runs of ─ at rows {hz:?}");
         assert!(vt.len() >= 2, "vertical runs of │ at cols {vt:?}");
+    }
+
+    #[test]
+    fn torus_outline_closed() {
+        let mut scene = Scene::shapes();
+        scene.objects = vec![Object { name: "t".into(), mesh: torus(0.7, 0.28, 32, 20), model: Mat4::IDENTITY, class: 0 }];
+        let cam = Camera::look_at(Vec3::new(0.0, 0.0, 3.0), Vec3::ZERO);
+        let (o, cols, rows) = run(&scene, &cam, &mut LineState::default(), &LineParams::default());
+        let xs: Vec<usize> = (0..cols).filter(|&x| (0..rows).any(|y| o.glyphs[y * cols + x].is_some())).collect();
+        let (lo, hi) = (*xs.first().unwrap(), *xs.last().unwrap());
+        assert!(hi - lo >= 20, "torus too small: {lo}..{hi}");
+        let top = |x: usize| (0..=rows / 2).any(|y| o.glyphs[y * cols + x].is_some());
+        // A shallow diagonal may skip one column; two empty columns in a row are a broken outline.
+        for x in lo..=hi - 1 {
+            assert!(top(x) || top(x + 1), "gap in the top half at columns {x} and {}", x + 1);
+        }
+    }
+
+    #[test]
+    fn torus_grazing_outline_closed() {
+        // The shapes-scene torus seen from a low angle: its far outline must be one unbroken run of cells.
+        let mut scene = Scene::shapes();
+        let cam = scene.bench_camera(120);
+        scene.objects = vec![scene.objects[3].clone()];
+        let (cols, rows) = (110, 34);
+        let atlas = Atlas::load(DEFAULT_FONT, &all_chars()).unwrap();
+        let gb = rasterize(&scene, &cam, cols, rows, 4, 8);
+        let o = render_lines(&scene, &cam, &gb, &atlas, &LineParams::default(), &mut LineState::default(), cols, rows);
+        let on = |x: usize, y: usize| o.glyphs[y * cols + x].is_some();
+        let ys: Vec<usize> = (0..rows).filter(|&y| (0..cols).any(|x| on(x, y))).collect();
+        let (y0, y1) = (*ys.first().unwrap(), *ys.last().unwrap());
+        let xs: Vec<usize> = (0..cols).filter(|&x| (0..rows).any(|y| on(x, y))).collect();
+        let (lo, hi) = (*xs.first().unwrap(), *xs.last().unwrap());
+        assert!(hi - lo >= 15, "torus too small: {lo}..{hi}");
+        let mid = (y0 + y1) / 2;
+        let missing: Vec<usize> = (lo..=hi).filter(|&x| !(y0..=mid).any(|y| on(x, y))).collect();
+        assert!(missing.is_empty(), "gaps in the far outline at columns {missing:?} (rows {y0}..{mid})");
     }
 
     #[test]
