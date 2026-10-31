@@ -59,9 +59,9 @@ struct Cli {
     density: f32,
     #[arg(long, default_value_t = 35.0)]
     crease_deg: f32,
-    #[arg(long, default_value_t = 0.5)]
+    #[arg(long, default_value_t = 2.0)]
     keep_margin: f32,
-    #[arg(long, default_value_t = 2.5)]
+    #[arg(long, default_value_t = 5.0)]
     keep_tol: f32,
     /// Mark anchor grid base frequency
     #[arg(long, default_value_t = 0.4)]
