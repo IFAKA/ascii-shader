@@ -110,6 +110,8 @@ impl Debounce {
 const HALO_HOLD: u8 = 4;
 /// Columns a line may be away and still keep an existing halo alive.
 const HALO_STAY_X: usize = 2;
+/// Columns within which a line blocks new marks (but not existing ones).
+const PRE_X: usize = 2;
 
 impl Renderer {
     /// Hand-drawn ink keeps white space next to lines: drop marks in line cells and their 8 neighbours, with a
@@ -130,7 +132,15 @@ impl Renderer {
             // A fresh state (first frame, resize) shows marks at once.
             self.shown = vec![Debounce { run: MARK_APPEAR, ..Debounce::default() }; cols * rows];
         }
-        for ((m, &h), d) in marks.iter_mut().zip(&self.halo).zip(&mut self.shown) {
+        for (i, ((m, &h), d)) in marks.iter_mut().zip(&self.halo).zip(&mut self.shown).enumerate() {
+            let (x, y) = (i % cols, i / cols);
+            let near2 = (y.saturating_sub(1)..=(y + 1).min(rows - 1)).any(|yy| (x.saturating_sub(PRE_X)..=(x + PRE_X).min(cols - 1)).any(|xx| lines[yy * cols + xx].is_some()));
+            if h == 0 && near2 && d.shown.is_none() {
+                // A line is about to arrive: a mark that would live only a frame or two does not start.
+                *d = Debounce::default();
+                *m = None;
+                continue;
+            }
             if h > 0 {
                 *m = None;
                 *d = Debounce::default();
