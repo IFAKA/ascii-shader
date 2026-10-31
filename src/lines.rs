@@ -28,6 +28,8 @@ const MIN_KEEP_LEN: f32 = 2.0;
 const PULL: f32 = 0.85;
 /// Distances up to this (glyph pixels) cost nothing: strokes are about 2 px wide.
 const TOL: f32 = 1.0;
+/// A new line cell whose ink lies within this many glyph pixels of a side border defers to a neighbour that had the line.
+const BORDER_PX: f32 = 3.0;
 
 
 
@@ -454,6 +456,7 @@ pub fn render_lines(
         (w > 0.0).then(|| v / w)
     };
     let centre = Vec2::new(centroid('│', 0).unwrap_or(GW as f32 / 2.0), centroid('─', 1).unwrap_or(GH as f32 / 2.0));
+    let has_entries: std::collections::HashSet<usize> = groups.iter().map(|&(i, _)| entries[i].cell as usize).collect();
     let decisions: Vec<Decision> = groups
         .par_iter()
         .filter_map(|&(i, j)| {
@@ -462,6 +465,16 @@ pub fn render_lines(
             let was = had.get(entries[i].cell as usize).copied().unwrap_or(false);
             if es[0].len_px() < if was { MIN_KEEP_LEN } else { MIN_NEW_LEN } {
                 return None;
+            }
+            // Border hysteresis: a new line cell hugging the border next to a cell that already drew this line
+            // would give `││` (or a hop between columns), so leave it to the neighbour.
+            if !was {
+                let cell = entries[i].cell as usize;
+                let (x0, x1) = es.iter().fold((f32::MAX, f32::MIN), |(lo, hi), e| (lo.min(e.p0.x.min(e.p1.x)), hi.max(e.p0.x.max(e.p1.x))));
+                let holds = |n: usize| had.get(n).copied().unwrap_or(false) && has_entries.contains(&n);
+                if (x1 < BORDER_PX && !cell.is_multiple_of(cols) && holds(cell - 1)) || (x0 > GW as f32 - BORDER_PX && cell % cols + 1 < cols && holds(cell + 1)) {
+                    return None;
+                }
             }
                         let segs: Vec<(Vec2, Vec2)> = es
                 .iter()

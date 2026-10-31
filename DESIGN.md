@@ -38,6 +38,7 @@ Edges come from the **mesh**, not from image edge detection. So every line has a
   - silhouette (per frame): one adjacent face front-facing, the other back-facing.
 - Visibility: sample each candidate edge every 0.25 cell, test against the depth buffer (min of 3x3 pixel
   neighbourhood + bias). Consecutive visible samples form a **piece** `(edge_id, t0, t1, screen polyline)`.
+- Border hysteresis: a new line cell with ink within 3 glyph px of a side border defers to a neighbour that drew a line last frame (no `││` / column hopping).
 - Cell segments: clip pieces to cells. Each cell gets a list of `(edge_id, t_mid, segment in cell-local [0,1]^2)`.
 - Glyph atlas (src/glyphs.rs): rasterize candidate glyphs from a real monospace font (fontdue, default
   `/System/Library/Fonts/Menlo.ttc`, flag `--font`) into a GW x GH = 8 x 16 coverage mask. Precompute each mask's
