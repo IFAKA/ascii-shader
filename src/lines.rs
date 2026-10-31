@@ -70,6 +70,9 @@ pub struct LineState {
 /// When the key misses (chain id or bucket changed at a junction), fall back to last frame's glyph in this cell with
 /// this fraction of keep_margin.
 const FALLBACK_MARGIN: f32 = 0.75;
+/// A kept glyph may have at most this much more far-from-path ink (the ink part of its cost) than the best glyph.
+/// Stops `┼` standing in for `─` after a crossing edge moved on; `╱` for a shallow `─` stays allowed.
+const KEEP_INK_EXTRA: f32 = 1.0;
 
 #[derive(Clone, Debug)]
 pub struct LineParams {
@@ -77,6 +80,8 @@ pub struct LineParams {
     pub crease_deg: f32,
     /// Keep last frame's glyph if its cost <= best cost + keep_margin (glyph pixel units).
     pub keep_margin: f32,
+    /// A kept glyph may have at most this much more far-from-path ink than the best glyph (default `KEEP_INK_EXTRA`).
+    pub keep_ink: f32,
     /// ... and its cost <= keep_tol.
     pub keep_tol: f32,
     pub lineset: LineSet,
@@ -84,7 +89,7 @@ pub struct LineParams {
 
 impl Default for LineParams {
     fn default() -> Self {
-        LineParams { crease_deg: 35.0, keep_margin: 2.0, keep_tol: 5.0, lineset: LineSet::Box }
+        LineParams { crease_deg: 35.0, keep_margin: 2.0, keep_ink: KEEP_INK_EXTRA, keep_tol: 5.0, lineset: LineSet::Box }
     }
 }
 
@@ -341,7 +346,7 @@ fn prior(ch: char) -> f32 {
 }
 
 /// Cost of every glyph for the segments of one cell.
-fn glyph_costs(segs: &[(Vec2, Vec2)], glyphs: &[&Glyph], ink_w: &[f32], costs: &mut Vec<f32>) {
+fn glyph_costs(segs: &[(Vec2, Vec2)], glyphs: &[&Glyph], ink_w: &[f32], costs: &mut Vec<f32>, inks: &mut Vec<f32>) {
     // Distance field of the path, clamped.
     let mut dmap = [0.0f32; GW * GH];
     for y in 0..GH {
@@ -363,13 +368,16 @@ fn glyph_costs(segs: &[(Vec2, Vec2)], glyphs: &[&Glyph], ink_w: &[f32], costs: &
         .map(|p| (p.y.clamp(0.0, GH as f32 - 0.01) as usize) * GW + p.x.clamp(0.0, GW as f32 - 0.01) as usize)
         .collect();
     costs.clear();
+    inks.clear();
         for (g, &wsum) in glyphs.iter().zip(ink_w) {
         if g.ink.is_empty() || wsum <= 0.0 {
             costs.push(f32::INFINITY);
+            inks.push(f32::INFINITY);
             continue;
         }
         let ink: f32 = g.ink.iter().map(|&(x, y, c)| c * (dmap[y as usize * GW + x as usize] - TOL).max(0.0)).sum::<f32>() / wsum;
         let path: f32 = pidx.iter().map(|&i| (g.dist[i].min(CLAMP) - TOL).max(0.0)).sum::<f32>() / pidx.len() as f32;
+        inks.push(ink);
         costs.push(ink + path + prior(g.ch));
     }
 }
@@ -573,7 +581,8 @@ pub fn render_lines(
                 })
                 .collect();
             let mut costs = vec![];
-            glyph_costs(&segs, &glyphs, &ink_w, &mut costs);
+            let mut inks = vec![];
+            glyph_costs(&segs, &glyphs, &ink_w, &mut costs, &mut inks);
             let (bi, &best) = costs.iter().enumerate().min_by(|a, b| a.1.total_cmp(b.1))?;
             if !best.is_finite() {
                 return None;
@@ -597,7 +606,7 @@ pub fn render_lines(
                 && let Some(pi) = glyphs.iter().position(|g| g.ch == pg)
             {
                 let margin = if hit.is_some() { params.keep_margin } else { params.keep_margin * FALLBACK_MARGIN };
-                if costs[pi] <= best + margin && costs[pi] <= params.keep_tol {
+                if costs[pi] <= best + margin && costs[pi] <= params.keep_tol && inks[pi] <= inks[bi] + params.keep_ink {
                     pick = pi;
                 }
             }
@@ -708,6 +717,19 @@ mod tests {
     }
 
     #[test]
+    fn crossing_glyph_not_kept_on_plain_line() {
+        let atlas = Atlas::load(DEFAULT_FONT, &all_chars()).unwrap();
+        let glyphs: Vec<&Glyph> = atlas.glyphs.iter().filter(|g| "─┼╱".contains(g.ch)).collect();
+        let ink_w: Vec<f32> = glyphs.iter().map(|g| g.ink.iter().map(|i| i.2).sum()).collect();
+        let y = GH as f32 / 2.0;
+        let segs = [(Vec2::new(0.0, y), Vec2::new(GW as f32, y))];
+        let (mut costs, mut inks) = (vec![], vec![]);
+        glyph_costs(&segs, &glyphs, &ink_w, &mut costs, &mut inks);
+        let at = |c: char| glyphs.iter().position(|g| g.ch == c).unwrap();
+        assert!(inks[at('┼')] > inks[at('─')] + KEEP_INK_EXTRA, "{inks:?}");
+    }
+
+    #[test]
     fn cube_edges_straight() {
         let scene = cube_scene();
         let cam = Camera::look_at(Vec3::new(0.0, 0.0, 3.0), Vec3::ZERO);
@@ -781,6 +803,7 @@ mod tests {
         st.memory.insert(key, '▔');
         p.keep_margin = 100.0;
         p.keep_tol = 100.0;
+        p.keep_ink = 100.0;
         let (o2, ..) = run(&scene, &cam, &mut st, &p);
         assert_eq!(o2.glyphs[cell], Some('▔'));
         st.memory.insert(key, '▔');
