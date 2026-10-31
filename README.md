@@ -45,6 +45,18 @@ Struct flickers about 7x less than tone and 12x less than edge. Frame time is un
 
 ![still](docs/still1.png)
 
+## Film: ORB (30 s)
+
+A short made only of terminal cells (glyph and colour, one background colour per frame). The same frames play in the terminal and in the MP4.
+
+```
+python3 tools/film_audio.py out/orb.wav                         # soundtrack
+cargo run --release -- --play-film --audio out/orb.wav          # play in the terminal (needs 160x45 cells; Esc quits)
+cargo run --release -- --film out/orb.mp4 --audio out/orb.wav   # same frames as video (needs ffmpeg)
+```
+
+Ready-made video: [docs/orb.mp4](docs/orb.mp4).
+
 ## Credits
 
 Ideas from:

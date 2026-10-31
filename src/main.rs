@@ -69,9 +69,15 @@ struct Cli {
     /// With --dump: also write PNGs
     #[arg(long)]
     png: bool,
-    /// Render the 30 s anime short to this MP4 (needs ffmpeg)
+    /// Render the 30 s anime short ORB to this MP4 (needs ffmpeg); the frames are terminal cells
     #[arg(long)]
     film: Option<String>,
+    /// Play the 30 s anime short ORB in this terminal (needs 160x45 cells)
+    #[arg(long)]
+    play_film: bool,
+    /// WAV soundtrack for --film (muxed) or --play-film (afplay/ffplay)
+    #[arg(long)]
+    audio: Option<String>,
     /// Run every mode for 240 frames at 160x50 and print metrics
     #[arg(long)]
     bench: bool,
@@ -151,9 +157,14 @@ fn main() {
     opts.marks.w_max = cli.w_max;
     opts.marks.stride = cli.stride.max(1);
 
-    if let Some(out) = &cli.film {
-        if let Err(e) = film::run(out, &atlas, &cli.font, &opts) {
-            fail(e);
+    if cli.film.is_some() || cli.play_film {
+        eprintln!("drawing the film...");
+        let frames = film::prerender(&atlas, &opts);
+        if let Some(out) = &cli.film {
+            film::write_video(&frames, &cli.font, out, cli.audio.as_deref()).unwrap_or_else(|e| fail(e));
+        }
+        if cli.play_film {
+            film::play(&frames, cli.audio.as_deref()).unwrap_or_else(|e| fail(e));
         }
     } else if cli.bench {
         bench(&scene, &atlas, &opts, cli.cols.unwrap_or(160), cli.rows.unwrap_or(50));
