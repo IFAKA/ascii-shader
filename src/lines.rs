@@ -69,6 +69,8 @@ pub struct LineState {
     prev: Vec<Option<char>>,
     /// Edge ids that survived the culls last frame (hysteresis for LOD and the parallel cull).
     alive: std::collections::HashSet<u64>,
+    /// Cells a stub was removed from last frame (hysteresis).
+    stub_gone: std::collections::HashSet<usize>,
 }
 
 /// When the key misses (chain id or bucket changed at a junction), fall back to last frame's glyph in this cell with
@@ -96,6 +98,11 @@ pub struct LineParams {
     pub runset: RunSet,
     /// Hysteresis of a run level, in levels (keep last frame's level unless the line is more than this far from it).
     pub run_keep: f32,
+    /// Also spell the slopes in between (0.5 to 2 in cell units) as runs: one cell per column or row, glyph by cost.
+    pub diag_runs: bool,
+    /// Remove a 1-2 cell piece that touches a longer line at one end only when its edge chain is shorter than this
+    /// many cells on screen (0 = off).
+    pub stub_chain: f32,
     /// Mask corner and tee glyphs in cells with one straight direction.
     pub straight_mask: bool,
     /// Draw only one of two nearly parallel edges that run closer than `PAR_DIST` cells.
@@ -134,11 +141,12 @@ struct Claim {
     vb: u32,
     glyph: char,
     key: u64,
-    /// 1 shallow, 2 steep.
+    /// 1 shallow, 2 steep, 3 diagonal per column, 4 diagonal per row.
     orient: u8,
 }
 
-/// A visible stretch of one edge, in cell units. `elig`: 1 shallow, 2 steep, 0 not a run.
+/// A visible stretch of one edge, in cell units. `elig`: 1 shallow, 2 steep, 3 diagonal one cell per column,
+/// 4 diagonal one cell per row, 0 not a run.
 #[derive(Clone, Copy)]
 struct Piece {
     id: u64,
@@ -164,9 +172,9 @@ struct Span {
 }
 
 /// Edges shorter than this on screen (chain length, cells) are not drawn when new ...
-const LOD_ON: f32 = 1.2;
+const LOD_ON: f32 = 2.5;
 /// ... and a drawn one vanishes only below this.
-const LOD_OFF: f32 = 0.8;
+const LOD_OFF: f32 = 1.8;
 /// Two edges are chained for the LOD test when their directions differ by less than this (cos).
 const CHAIN_COS: f32 = 0.82;
 /// Parallel cull: angle limit (sine), distance limit (cells), and the least overlap as a fraction of the shorter edge.
@@ -184,7 +192,7 @@ struct EdgeVis {
 }
 
 /// Edge ids to drop this frame: short chains (LOD), then the weaker of two near-parallel edges of one object.
-fn cull_edges(spans: &[Span], lod: bool, parallel: bool, alive: &std::collections::HashSet<u64>) -> std::collections::HashSet<u64> {
+fn cull_edges(spans: &[Span], lod: bool, parallel: bool, alive: &std::collections::HashSet<u64>) -> (std::collections::HashSet<u64>, HashMap<u64, f32>) {
     let mut dead = std::collections::HashSet::new();
     // One entry per edge: its longest piece, total visible length.
     let mut by_id: HashMap<u64, EdgeVis> = HashMap::new();
@@ -230,6 +238,7 @@ fn cull_edges(spans: &[Span], lod: bool, parallel: bool, alive: &std::collection
         total[r] += e.len;
     }
     let chain_len: Vec<f32> = (0..n).map(|i| total[find(&mut root, i)]).collect();
+    let chain_of: HashMap<u64, f32> = edges.iter().zip(&chain_len).map(|(e, &l)| (e.s.id, l)).collect();
     let chain_keep: Vec<f32> = if lod {
         let mut keep = vec![true; n];
         for (i, e) in edges.iter().enumerate() {
@@ -265,7 +274,7 @@ fn cull_edges(spans: &[Span], lod: bool, parallel: bool, alive: &std::collection
             }
         }
     }
-    dead
+    (dead, chain_of)
 }
 
 /// True if `b` lies alongside `a`: same object, no shared vertex, nearly parallel, close, and overlapping.
@@ -296,6 +305,10 @@ fn parallel_pair(a: &Span, b: &Span) -> bool {
     ua.perp_dot(p - a.a).abs() < PAR_DIST
 }
 
+const STUB_CHAIN: f32 = 3.0;
+/// A stub removed last frame stays removed up to this factor of the chain length threshold.
+const STUB_HYST: f32 = 1.6;
+
 /// A run keeps a cell it held last frame this far (cells) past its end.
 const END_KEEP: f32 = 0.3;
 /// Hysteresis for a run level: keep last frame's level unless the line is more than this many levels away.
@@ -303,7 +316,7 @@ const LEVEL_KEEP: f32 = 0.6;
 
 impl Default for LineParams {
     fn default() -> Self {
-        LineParams { crease_deg: 35.0, keep_margin: 2.0, keep_ink: KEEP_INK_EXTRA, keep_tol: 5.0, lineset: LineSet::Box, run_slope: 0.5, runset: RunSet::Scan, run_keep: LEVEL_KEEP, straight_mask: true, parallel_cull: true, lod: true }
+        LineParams { crease_deg: 35.0, keep_margin: 2.0, keep_ink: KEEP_INK_EXTRA, keep_tol: 5.0, lineset: LineSet::Box, run_slope: 0.5, runset: RunSet::Scan, run_keep: LEVEL_KEEP, diag_runs: true, stub_chain: STUB_CHAIN, straight_mask: true, parallel_cull: true, lod: true }
     }
 }
 
@@ -435,7 +448,7 @@ impl Vis<'_> {
 
 /// Entries of one edge (visible pieces clipped to cells).
 #[allow(clippy::too_many_arguments)]
-fn trace_edge(scene: &Scene, gb: &GBuffer, vis: &Vis, slope: f32, obj: usize, e: &Edge, sil: bool, out: &mut Vec<Entry>, pieces: &mut Vec<Piece>, spans: &mut Vec<Span>) {
+fn trace_edge(scene: &Scene, gb: &GBuffer, vis: &Vis, slope: f32, diag: bool, obj: usize, e: &Edge, sil: bool, out: &mut Vec<Entry>, pieces: &mut Vec<Piece>, spans: &mut Vec<Span>) {
     let o = &scene.objects[obj];
     let m = &o.mesh;
     let wa = o.model.transform_point3(m.verts[e.a as usize]);
@@ -466,8 +479,12 @@ fn trace_edge(scene: &Scene, gb: &GBuffer, vis: &Vis, slope: f32, obj: usize, e:
         1
     } else if dc.x <= slope * dc.y {
         2
-    } else {
+    } else if !diag {
         0
+    } else if dc.y <= dc.x {
+        3
+    } else {
+        4
     };
     let mut pstart: Option<Vec2> = None;
     let mut plast = Vec2::ZERO;
@@ -706,6 +723,100 @@ fn through_count(es: &[&Entry]) -> usize {
     count
 }
 
+/// Glyphs a diagonal run chooses from (the font decides by cost on the piece in the cell).
+pub struct DiagGlyphs<'a> {
+    glyphs: Vec<&'a Glyph>,
+    ink_w: Vec<f32>,
+    /// Keep last frame's glyph if its cost is at most this much above the best.
+    margin: f32,
+}
+
+impl<'a> DiagGlyphs<'a> {
+    pub fn new(atlas: &'a Atlas, margin: f32) -> Self {
+        let glyphs: Vec<&Glyph> = ['╱', '╲', '│', '─', '⎺', '⎻', '⎼', '⎽'].iter().filter_map(|&c| atlas.get(c)).collect();
+        let ink_w = glyphs.iter().map(|g| g.ink.iter().map(|i| i.2).sum()).collect();
+        DiagGlyphs { glyphs, ink_w, margin }
+    }
+}
+
+/// Glyph index for the stretch `a -> b` (cell units) inside cell `(col, row)`.
+fn diag_glyph(a: Vec2, b: Vec2, col: i32, row: i32, dg: &DiagGlyphs, prev: Option<usize>) -> usize {
+    let origin = Vec2::new(col as f32, row as f32);
+    let g = Vec2::new(GW as f32, GH as f32);
+    let (p0, p1) = match clip_cell(a, b, origin.x, origin.y) {
+        Some((t0, t1)) if t1 - t0 > 1e-3 => (a + (b - a) * t0, a + (b - a) * t1),
+        _ => {
+            let d = (b - a).normalize_or_zero() * 0.3;
+            let c = origin + Vec2::splat(0.5);
+            (c - d, c + d)
+        }
+    };
+    let (q0, q1) = ((p0 - origin) * g, (p1 - origin) * g);
+    let shift = (g * 0.5 - (q0 + q1) * 0.5) * PULL;
+    let (mut costs, mut inks) = (vec![], vec![]);
+    glyph_costs(&[(q0 + shift, q1 + shift)], &dg.glyphs, &dg.ink_w, &mut costs, &mut inks);
+    let best = (0..costs.len()).min_by(|&i, &j| costs[i].total_cmp(&costs[j])).unwrap_or(0);
+    match prev {
+        Some(p) if p < costs.len() && costs[p] <= costs[best] + dg.margin => p,
+        _ => best,
+    }
+}
+
+/// Claims of a diagonal piece: every cell the line crosses at a column centre or at a row centre (for slopes up to 1
+/// the second set repeats the first, so a cell is claimed once; a chain of short edges that alternate between the two
+/// classes leaves no gap). Glyph by cost.
+fn diag_claims(pc: &Piece, mem: &RunMem, cols: usize, rows: usize, dg: &DiagGlyphs, out: &mut Vec<Claim>, new_mem: &mut RunMem) {
+    if dg.glyphs.is_empty() {
+        return;
+    }
+    let first = out.len();
+    for axis in [3u8, 4u8] {
+        diag_axis(pc, axis, mem, cols, rows, dg, out, new_mem, first);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn diag_axis(pc: &Piece, axis: u8, mem: &RunMem, cols: usize, rows: usize, dg: &DiagGlyphs, out: &mut Vec<Claim>, new_mem: &mut RunMem, first: usize) {
+    let per_col = axis == 3;
+    let (a, b) = if per_col == (pc.a.x <= pc.b.x) { (pc.a, pc.b) } else { (pc.b, pc.a) };
+    let (a, b) = if per_col { (a, b) } else if pc.a.y <= pc.b.y { (pc.a, pc.b) } else { (pc.b, pc.a) };
+    // u: position along the run's main axis; v: the cross axis.
+    let (ua, ub) = if per_col { (a.x, b.x) } else { (a.y, b.y) };
+    let k = if per_col { (b.y - a.y) / (b.x - a.x).max(1e-6) } else { (b.x - a.x) / (b.y - a.y).max(1e-6) };
+    let n_main = if per_col { cols } else { rows } as i32;
+    let n_cross = if per_col { rows } else { cols } as i32;
+    let u0 = (ua - 0.5 - END_KEEP).ceil().max(0.0) as i32;
+    for m in u0..n_main {
+        let u = m as f32 + 0.5;
+        if u >= ub + END_KEEP {
+            break;
+        }
+        let key = (pc.id, m, axis);
+        if !(u >= ua && u < ub) && !mem.contains_key(&key) {
+            continue;
+        }
+        let v = if per_col { a.y } else { a.x } + (u - ua) * k;
+        let (mut cross, mut prev) = (v.floor() as i32, None);
+        if let Some(&(pc_, pg)) = mem.get(&key)
+            && (v - (pc_ as f32 + 0.5)).abs() <= 0.5 + 0.1
+        {
+            cross = pc_;
+            prev = Some(pg as usize);
+        }
+        if cross < 0 || cross >= n_cross {
+            continue;
+        }
+        let (col, row) = if per_col { (m, cross) } else { (cross, m) };
+        let gi = diag_glyph(pc.a, pc.b, col, row, dg, prev);
+        new_mem.insert(key, (cross, gi as u8));
+        let cell = row as usize * cols + col as usize;
+        if out[first..].iter().any(|c| c.cell == cell) {
+            continue;
+        }
+        out.push(Claim { cell: row as usize * cols + col as usize, obj: pc.obj, id: pc.id, va: pc.va, vb: pc.vb, glyph: dg.glyphs[gi].ch, key: mix(pc.id ^ mix(m as u64 + 0x3000 * pc.elig as u64)) >> 1, orient: pc.elig });
+    }
+}
+
 /// Claims of all runs: a shallow piece takes the cell of every column whose centre it covers, a steep piece the cell
 /// of every row. Returns the claims and the new run memory.
 fn run_claims(
@@ -715,12 +826,17 @@ fn run_claims(
     keep: f32,
     cols: usize,
     rows: usize,
+    dg: &DiagGlyphs,
 ) -> (Vec<Claim>, RunMem) {
     let mut out = vec![];
     let mut new_mem = HashMap::new();
     // Mean spacing of the levels, in cell heights.
     let sp = if levels.len() > 1 { (levels[levels.len() - 1].1 - levels[0].1) / (levels.len() - 1) as f32 } else { 0.25 };
     for pc in pieces {
+        if pc.elig >= 3 {
+            diag_claims(pc, mem, cols, rows, dg, &mut out, &mut new_mem);
+            continue;
+        }
         let (a, b) = if pc.elig == 1 { if pc.a.x <= pc.b.x { (pc.a, pc.b) } else { (pc.b, pc.a) } } else if pc.a.y <= pc.b.y { (pc.a, pc.b) } else { (pc.b, pc.a) };
         if pc.elig == 1 {
             let k = (b.y - a.y) / (b.x - a.x).max(1e-6);
@@ -804,17 +920,10 @@ enum Kind {
     Cell,
 }
 
-/// Direction class of an entry segment (glyph px, 8 x 16 per cell): 1 shallow, 2 steep, 0 diagonal.
+/// Direction class of an entry (that of its edge, so it matches the run claims): 1 shallow, 2 steep, 3 and 4 diagonal,
+/// 0 not a run edge.
 fn entry_orient(e: &Entry) -> u8 {
-    let d = e.p1 - e.p0;
-    let (dx, dy) = (d.x.abs() / GW as f32, d.y.abs() / GH as f32);
-    if dy <= 0.6 * dx {
-        1
-    } else if dx <= 0.6 * dy {
-        2
-    } else {
-        0
-    }
+    e.elig
 }
 
 /// Decide how a cell with entries `es` and run claims `cl` is spelled.
@@ -853,6 +962,8 @@ struct Decision {
     key: u64,
     glyph: char,
     obj: u16,
+    /// Edge the cell was spelled from (for its chain length).
+    edge: u64,
     /// Longest entry of the cell (glyph px) and how much it counts in a duel with a neighbour.
     seg: (Vec2, Vec2),
     score: f32,
@@ -940,7 +1051,7 @@ pub fn render_lines(
         .map(|chunk| {
             let (mut v, mut p, mut sp) = (vec![], vec![], vec![]);
             for &(oi, ei, sil) in chunk {
-                trace_edge(scene, gb, &vis, params.run_slope, oi, &objs[oi].edges[ei], sil, &mut v, &mut p, &mut sp);
+                trace_edge(scene, gb, &vis, params.run_slope, params.diag_runs, oi, &objs[oi].edges[ei], sil, &mut v, &mut p, &mut sp);
             }
             (v, p, sp)
         })
@@ -953,9 +1064,11 @@ pub fn render_lines(
         pieces.extend(p);
         spans.extend(sp);
     }
+    let mut chain_of: HashMap<u64, f32> = HashMap::new();
     if params.lod || params.parallel_cull {
         spans.sort_by(|a, b| a.id.cmp(&b.id).then(a.a.x.total_cmp(&b.a.x)).then(a.a.y.total_cmp(&b.a.y)));
-        let dead = cull_edges(&spans, params.lod, params.parallel_cull, &state.alive);
+        let (dead, chain_len) = cull_edges(&spans, params.lod, params.parallel_cull, &state.alive);
+        chain_of = chain_len;
         entries.retain(|e| !dead.contains(&e.id));
         pieces.retain(|p| !dead.contains(&p.id));
         state.alive = spans.iter().map(|s| s.id).filter(|id| !dead.contains(id)).collect();
@@ -988,7 +1101,7 @@ pub fn render_lines(
         })
         .collect();
     levels.sort_by(|a, b| a.1.total_cmp(&b.1));
-    let (claims, new_run_mem) = if params.run_slope > 0.0 && !levels.is_empty() { run_claims(&pieces, &levels, &state.run_mem, params.run_keep, cols, rows) } else { (vec![], HashMap::new()) };
+    let (claims, new_run_mem) = if params.run_slope > 0.0 && !levels.is_empty() { run_claims(&pieces, &levels, &state.run_mem, params.run_keep, cols, rows, &DiagGlyphs::new(atlas, params.keep_margin)) } else { (vec![], HashMap::new()) };
     let mut claim_at: HashMap<usize, Vec<usize>> = HashMap::new();
     for (i, c) in claims.iter().enumerate() {
         claim_at.entry(c.cell).or_default().push(i);
@@ -1102,7 +1215,7 @@ pub fn render_lines(
                     pick = pi;
                 }
             }
-            Some(Decision { cell: entries[i].cell as usize, key, glyph: glyphs[pick].ch, obj: rep.obj, seg: (es[0].p0, es[0].p1), score: main_len + if was { STAIR_BONUS } else { 0.0 }, weak })
+            Some(Decision { cell: entries[i].cell as usize, key, glyph: glyphs[pick].ch, obj: rep.obj, edge: rep.id, seg: (es[0].p0, es[0].p1), score: main_len + if was { STAIR_BONUS } else { 0.0 }, weak })
         })
         .collect();
 
@@ -1169,7 +1282,7 @@ pub fn render_lines(
             if matches!(group_kind.get(&c.cell), Some(Kind::Junction | Kind::Cell)) || !taken.insert(c.cell) {
                 continue;
             }
-            decisions.push(Decision { cell: c.cell, key: c.key, glyph: c.glyph, obj: c.obj, seg: (Vec2::ZERO, Vec2::ZERO), score: 0.0, weak: false });
+            decisions.push(Decision { cell: c.cell, key: c.key, glyph: c.glyph, obj: c.obj, edge: c.id, seg: (Vec2::ZERO, Vec2::ZERO), score: 0.0, weak: false });
         }
         // Three steep runs side by side read as a comb: the middle one goes.
         let vert: std::collections::HashSet<usize> = decisions.iter().filter(|d| d.glyph == '│' && d.seg.1 == Vec2::ZERO).map(|d| d.cell).collect();
@@ -1178,6 +1291,26 @@ pub fn render_lines(
     state.run_mem = new_run_mem;
     let mut used: HashMap<u64, u64> = HashMap::new();
     let mut mem: HashMap<u64, char> = HashMap::new();
+    // Stubs: a 1-2 cell piece that touches a longer line at one end only and comes from a short visible chain.
+    let mut pre_had: Vec<usize> = vec![];
+    if params.stub_chain > 0.0 {
+        pre_had = decisions.iter().map(|d| d.cell).collect();
+        let mut grid = vec![' '; cols * rows];
+        for d in &decisions {
+            grid[d.cell] = d.glyph;
+        }
+        let edge_at: HashMap<usize, u64> = decisions.iter().map(|d| (d.cell, d.edge)).collect();
+        let mut gone: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for piece in crate::metrics::stub_pieces(&grid, cols, true) {
+            let cells: Vec<usize> = piece.iter().map(|&(r, c)| r as usize * cols + c as usize).collect();
+            let thr = if cells.iter().any(|c| state.stub_gone.contains(c)) { params.stub_chain * STUB_HYST } else { params.stub_chain };
+            if cells.iter().all(|c| edge_at.get(c).and_then(|e| chain_of.get(e)).is_some_and(|&l| l < thr)) {
+                gone.extend(cells);
+            }
+        }
+        decisions.retain(|d| !gone.contains(&d.cell));
+        state.stub_gone = gone;
+    }
     for d in decisions {
         let n = used.entry(d.key).or_insert(0);
         let key = if *n == 0 { d.key } else { mix(d.key ^ *n) >> 1 };
@@ -1190,6 +1323,9 @@ pub fn render_lines(
     state.memory = mem;
     state.prev = out.glyphs.clone();
     state.had = out.glyphs.iter().map(|g| g.is_some()).collect();
+    for c in pre_had {
+        state.had[c] = true;
+    }
     out
 }
 
@@ -1301,6 +1437,10 @@ mod tests {
         assert!(missing.is_empty(), "gaps in the far outline at columns {missing:?} (rows {y0}..{mid})");
     }
 
+    fn no_diag() -> DiagGlyphs<'static> {
+        DiagGlyphs { glyphs: vec![], ink_w: vec![], margin: 2.0 }
+    }
+
     fn levels5() -> Vec<(char, f32)> {
         vec![('⎺', 0.06), ('⎻', 0.31), ('─', 0.57), ('⎼', 0.75), ('⎽', 0.94)]
     }
@@ -1309,7 +1449,7 @@ mod tests {
     fn shallow_run_one_cell_per_column() {
         // A line dropping about 1.3 rows over 12 columns.
         let p = Piece { id: 7, obj: 0, va: 1, vb: 2, a: Vec2::new(2.0, 5.1), b: Vec2::new(14.0, 6.4), elig: 1 };
-        let (claims, _) = run_claims(&[p], &levels5(), &HashMap::new(), 0.6, 40, 20);
+        let (claims, _) = run_claims(&[p], &levels5(), &HashMap::new(), 0.6, 40, 20, &no_diag());
         let cols = 40;
         let mut by_col: Vec<Vec<&Claim>> = vec![vec![]; cols];
         for c in &claims {
@@ -1331,7 +1471,7 @@ mod tests {
     #[test]
     fn steep_run_one_cell_per_row() {
         let p = Piece { id: 9, obj: 0, va: 1, vb: 2, a: Vec2::new(5.2, 2.0), b: Vec2::new(6.6, 14.0), elig: 2 };
-        let (claims, _) = run_claims(&[p], &levels5(), &HashMap::new(), 0.6, 40, 20);
+        let (claims, _) = run_claims(&[p], &levels5(), &HashMap::new(), 0.6, 40, 20, &no_diag());
         let mut cols_at: Vec<Option<usize>> = vec![None; 20];
         for c in &claims {
             assert_eq!(c.glyph, '│');
@@ -1340,6 +1480,53 @@ mod tests {
         for r in 2..14 {
             assert!(cols_at[r].is_some(), "row {r} missing");
         }
+    }
+
+    fn diag_glyphs(atlas: &Atlas) -> DiagGlyphs<'_> {
+        DiagGlyphs::new(atlas, 2.0)
+    }
+
+    #[test]
+    fn diagonal_run_one_cell_per_row_no_gap() {
+        // About 60 degrees on screen in cell units: 1 column per 1.7 rows is too steep; use 1 per 1.0 (63 deg with 1:2 cells).
+        let atlas = Atlas::load(DEFAULT_FONT, &all_chars()).unwrap();
+        let dg = diag_glyphs(&atlas);
+        for (a, b) in [(Vec2::new(5.2, 3.1), Vec2::new(15.0, 12.9)), (Vec2::new(5.2, 3.0), Vec2::new(12.0, 13.0)), (Vec2::new(15.0, 3.0), Vec2::new(8.0, 11.0))] {
+            let p = Piece { id: 3, obj: 0, va: 1, vb: 2, a, b, elig: 4 };
+            let (claims, _) = run_claims(&[p], &levels5(), &HashMap::new(), 0.6, 40, 20, &dg);
+            let mut at: Vec<Vec<usize>> = vec![vec![]; 20];
+            for c in &claims {
+                at[c.cell / 40].push(c.cell % 40);
+            }
+            let (r0, r1) = (a.y.min(b.y).ceil() as usize, b.y.max(a.y).floor() as usize);
+            for r in r0..r1 {
+                assert!(!at[r].is_empty(), "row {r} has no cell for {a:?} -> {b:?}");
+                assert!(at[r].len() <= 2, "row {r} has {} cells", at[r].len());
+                if r > r0 {
+                    let (x0, x1) = (at[r - 1][0] as i32, at[r][0] as i32);
+                    assert!((x1 - x0).abs() <= 1, "column jump {x0} -> {x1} at row {r}");
+                }
+            }
+            assert!(claims.iter().all(|c| "╱╲│─⎺⎻⎼⎽".contains(c.glyph)));
+            // No zig-zag: the line only ever moves one way.
+            let dir = (b.x - a.x).signum() as i32;
+            for r in r0 + 1..r1 {
+                assert!((at[r][0] as i32 - at[r - 1][0] as i32) * dir >= 0, "zig-zag at row {r}");
+            }
+        }
+    }
+
+    #[test]
+    fn one_cell_stub_is_removed() {
+        // A cube whose camera sees a short far chain would do; test the grid rule directly through the pipeline instead:
+        // a `─` stuck to a long `│` goes, the long line stays.
+        let mut grid = vec![' '; 10 * 8];
+        for r in 0..8 {
+            grid[r * 10 + 2] = '│';
+        }
+        grid[3 * 10 + 3] = '─';
+        let stubs = crate::metrics::stub_pieces(&grid, 10, true);
+        assert_eq!(stubs, vec![vec![(3, 3)]]);
     }
 
     #[test]
@@ -1394,29 +1581,29 @@ mod tests {
     #[test]
     fn parallel_edges_half_cell_apart_draw_once() {
         let spans = [span(1, 0, 1, (0.0, 0.0), (10.0, 0.0)), span(2, 2, 3, (0.0, 0.5), (9.0, 0.5))];
-        let dead = cull_edges(&spans, false, true, &Default::default());
+        let dead = cull_edges(&spans, false, true, &Default::default()).0;
         assert_eq!(dead.len(), 1);
         assert!(dead.contains(&2), "the longer edge wins");
         // Far apart: both stay. Off: both stay.
         let far = [span(1, 0, 1, (0.0, 0.0), (10.0, 0.0)), span(2, 2, 3, (0.0, 4.0), (9.0, 4.0))];
-        assert!(cull_edges(&far, false, true, &Default::default()).is_empty());
-        assert!(cull_edges(&spans, false, false, &Default::default()).is_empty());
+        assert!(cull_edges(&far, false, true, &Default::default()).0.is_empty());
+        assert!(cull_edges(&spans, false, false, &Default::default()).0.is_empty());
     }
 
     #[test]
     fn parallel_winner_is_stable() {
         let spans = [span(1, 0, 1, (0.0, 0.0), (10.0, 0.0)), span(2, 2, 3, (0.0, 0.5), (10.5, 0.5))];
         let alive: std::collections::HashSet<u64> = [1].into_iter().collect();
-        let dead = cull_edges(&spans, false, true, &alive);
+        let dead = cull_edges(&spans, false, true, &alive).0;
         assert!(dead.contains(&2) && !dead.contains(&1), "last frame's survivor keeps the line");
     }
 
     #[test]
     fn short_isolated_edge_is_dropped_but_chain_stays() {
         let lone = [span(1, 0, 1, (0.0, 0.0), (0.8, 0.0))];
-        assert!(cull_edges(&lone, true, false, &Default::default()).contains(&1));
-        let chain = [span(1, 0, 1, (0.0, 0.0), (0.8, 0.0)), span(2, 1, 2, (0.8, 0.0), (1.6, 0.1))];
-        assert!(cull_edges(&chain, true, false, &Default::default()).is_empty());
+        assert!(cull_edges(&lone, true, false, &Default::default()).0.contains(&1));
+        let chain = [span(1, 0, 1, (0.0, 0.0), (1.6, 0.0)), span(2, 1, 2, (1.6, 0.0), (3.2, 0.1))];
+        assert!(cull_edges(&chain, true, false, &Default::default()).0.is_empty());
     }
 
     #[test]

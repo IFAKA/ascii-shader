@@ -38,6 +38,12 @@ struct Cli {
     /// Runs: edges within this screen slope (cell units) of horizontal/vertical are spelled one cell per column/row (0 = off)
     #[arg(long, default_value_t = 0.5)]
     run_slope: f32,
+    /// Do not spell the slopes between shallow and steep as runs (per-cell scoring instead)
+    #[arg(long)]
+    no_diag_runs: bool,
+    /// Remove 1-2 cell stubs whose edge chain is shorter than this many cells (0 = off)
+    #[arg(long, default_value_t = 3.0)]
+    stub_chain: f32,
     /// Run level hysteresis, in levels
     #[arg(long, default_value_t = 0.6)]
     run_keep: f32,
@@ -56,6 +62,9 @@ struct Cli {
     dump: Option<usize>,
     #[arg(long, default_value = "out")]
     out: String,
+    /// With --dump: first bench camera frame (default 120)
+    #[arg(long, default_value_t = 120)]
+    dump_start: usize,
     /// With --dump: also write PNGs
     #[arg(long)]
     png: bool,
@@ -122,6 +131,8 @@ fn main() {
     opts.lines.lineset = cli.lineset;
     opts.lines.crease_deg = cli.crease_deg;
     opts.lines.run_slope = cli.run_slope;
+    opts.lines.diag_runs = !cli.no_diag_runs;
+    opts.lines.stub_chain = cli.stub_chain;
     opts.lines.runset = cli.runset;
     opts.lines.straight_mask = !cli.no_straight_mask;
     opts.lines.run_keep = cli.run_keep;
@@ -139,7 +150,7 @@ fn main() {
     if cli.bench {
         bench(&scene, &atlas, &opts, cli.cols.unwrap_or(160), cli.rows.unwrap_or(50));
     } else if let Some(n) = cli.dump {
-        dump(&scene, &atlas, &opts, n, cli.cols.unwrap_or(160), cli.rows.unwrap_or(50), &cli.out, cli.png);
+        dump(&scene, &atlas, &opts, cli.dump_start, n, cli.cols.unwrap_or(160), cli.rows.unwrap_or(50), &cli.out, cli.png);
     } else if let Err(e) = term::run(&scene, &atlas, opts, cli.cols.zip(cli.rows)) {
         fail(e);
     }
@@ -201,8 +212,8 @@ fn bench(scene: &Scene, atlas: &Atlas, base: &Options, cols: usize, rows: usize)
         let (combs, holes, crosses) = m.look_avg();
         let flat = if m.has_ids { format!("{:.3}%", m.respell_flat_pct()) } else { "n/a".into() };
         println!(
-            "mode={} ms={:.2} changed={:.2}% flicker={:.3}% respell={} respell_flat={} combs={:.2} holes={:.2} crosses={:.2} cells={:.1}",
-            mode.name(), total / 240.0, m.changed_pct(), m.flicker_pct(), respell, flat, combs, holes, crosses, m.cells_avg()
+            "mode={} ms={:.2} changed={:.2}% flicker={:.3}% respell={} respell_flat={} combs={:.2} holes={:.2} crosses={:.2} cells={:.1} dholes={:.2} stubs={:.2}",
+            mode.name(), total / 240.0, m.changed_pct(), m.flicker_pct(), respell, flat, combs, holes, crosses, m.cells_avg(), m.diag_avg().0, m.diag_avg().1
         );
     }
 }
@@ -250,11 +261,11 @@ fn classify_flicker(classes: &[(Vec<char>, Vec<u8>)], cols: usize, rows: usize) 
 }
 
 #[allow(clippy::too_many_arguments)]
-fn dump(scene: &Scene, atlas: &Atlas, opts: &Options, n: usize, cols: usize, rows: usize, out: &str, png: bool) {
+fn dump(scene: &Scene, atlas: &Atlas, opts: &Options, start: usize, n: usize, cols: usize, rows: usize, out: &str, png: bool) {
     std::fs::create_dir_all(out).unwrap_or_else(|e| fail(format!("{out}: {e}")));
     let mut r = Renderer::default();
     for i in 0..n {
-        let cam = scene.bench_camera(120 + i);
+        let cam = scene.bench_camera(start + i);
         let frame = r.render(scene, &cam, atlas, opts, cols, rows);
         let base = format!("{out}/frame_{i:03}");
         std::fs::write(format!("{base}.txt"), compose::to_text(&frame.cells, cols)).unwrap_or_else(|e| fail(e));
