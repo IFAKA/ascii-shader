@@ -55,7 +55,7 @@ struct Cli {
     #[arg(long)]
     rows: Option<usize>,
     /// Mark density multiplier
-    #[arg(long, default_value_t = 1.0)]
+    #[arg(long, default_value_t = 2.0)]
     density: f32,
     #[arg(long, default_value_t = 35.0)]
     crease_deg: f32,
@@ -64,7 +64,7 @@ struct Cli {
     #[arg(long, default_value_t = 2.5)]
     keep_tol: f32,
     /// Mark anchor grid base frequency
-    #[arg(long, default_value_t = 1.0)]
+    #[arg(long, default_value_t = 0.4)]
     f: f32,
     /// Mark levels n (k in -n..=n)
     #[arg(long, default_value_t = 1)]
