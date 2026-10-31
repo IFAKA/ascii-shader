@@ -417,13 +417,14 @@ impl Scene {
         s.add("floor", plane(24.0, 44.0, 1), Mat4::from_translation(Vec3::new(0.0, 0.0, -10.0)), 0);
         let col = cylinder(0.35, 4.0, 16);
         let boxm = cube();
+        let slab = cylinder(0.5, 0.3, 16);
         let arch_m = arch_rib(3.0, 0.3, 0.4, 32);
         for k in 0..4 {
             let z = -2.0 - 4.0 * k as f32;
             for side in [-3.0f32, 3.0] {
                 s.add("column", col.clone(), Mat4::from_translation(Vec3::new(side, 0.0, z)), 0);
-                s.add("base", boxm.clone(), Mat4::from_translation(Vec3::new(side, 0.15, z)) * Mat4::from_scale(Vec3::new(1.0, 0.3, 1.0)), 0);
-                s.add("capital", boxm.clone(), Mat4::from_translation(Vec3::new(side, 4.12, z)) * Mat4::from_scale(Vec3::new(0.9, 0.25, 0.9)), 0);
+                s.add("base", slab.clone(), Mat4::from_translation(Vec3::new(side, 0.0, z)) * Mat4::from_scale(Vec3::new(1.0, 1.0, 1.0)), 0);
+                s.add("capital", slab.clone(), Mat4::from_translation(Vec3::new(side, 3.87, z)) * Mat4::from_scale(Vec3::new(1.1, 1.0, 1.1)), 0);
             }
             s.add("arch", arch_m.clone(), Mat4::from_translation(Vec3::new(0.0, 4.0, z)), 1);
         }
