@@ -102,6 +102,8 @@ pub struct Metrics {
     /// Respell that treats the five scan-line glyphs as one (a run stepping a level is motion, not a respell).
     respell_flat: usize,
     looks: (usize, usize, usize),
+    /// Line cells summed over frames (ids with the mark bit clear whose glyph is shown).
+    cells: usize,
     frames: usize,
     pub has_ids: bool,
 }
@@ -119,6 +121,7 @@ impl Metrics {
         }
         if let Some(ids) = ids {
             self.has_ids = true;
+            self.cells += ids.iter().filter(|&&(k, i, g)| k >> 63 == 0 && chars[i] == g).count();
             let cur: HashMap<u64, char> = ids.iter().map(|&(k, _, g)| (k, g)).collect();
             for (k, g) in &cur {
                 if let Some(pg) = self.prev_ids.get(k) {
@@ -149,6 +152,10 @@ impl Metrics {
     pub fn look_avg(&self) -> (f64, f64, f64) {
         let n = self.frames.max(1) as f64;
         (self.looks.0 as f64 / n, self.looks.1 as f64 / n, self.looks.2 as f64 / n)
+    }
+    /// Average line cells per frame.
+    pub fn cells_avg(&self) -> f64 {
+        self.cells as f64 / self.frames.max(1) as f64
     }
     pub fn respell_flat_pct(&self) -> f64 {
         Self::pct(self.respell_flat, self.respell_den)

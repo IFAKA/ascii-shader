@@ -415,7 +415,7 @@ impl Scene {
     pub fn chapel() -> Scene {
         let mut s = Scene::empty(Camera::look_at(Vec3::new(0.0, 1.8, 3.0), Vec3::new(0.0, 2.0, -12.0)), Vec3::new(0.0, 1.8, -4.0));
         s.add("floor", plane(24.0, 44.0, 1), Mat4::from_translation(Vec3::new(0.0, 0.0, -10.0)), 0);
-        let col = cylinder(0.35, 4.0, 12);
+        let col = cylinder(0.35, 4.0, 16);
         let boxm = cube();
         let arch_m = arch_rib(3.0, 0.3, 0.4, 32);
         for k in 0..4 {

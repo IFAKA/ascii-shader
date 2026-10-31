@@ -69,6 +69,12 @@ struct Cli {
     /// Mark density multiplier
     #[arg(long, default_value_t = 2.0)]
     density: f32,
+    /// Turn off parallel-edge suppression
+    #[arg(long)]
+    no_parallel_cull: bool,
+    /// Turn off level-of-detail culling of short edges
+    #[arg(long)]
+    no_lod: bool,
     #[arg(long, default_value_t = 35.0)]
     crease_deg: f32,
     #[arg(long, default_value_t = 2.0)]
@@ -119,6 +125,8 @@ fn main() {
     opts.lines.runset = cli.runset;
     opts.lines.straight_mask = !cli.no_straight_mask;
     opts.lines.run_keep = cli.run_keep;
+    opts.lines.parallel_cull = !cli.no_parallel_cull;
+    opts.lines.lod = !cli.no_lod;
     opts.lines.keep_margin = cli.keep_margin;
     opts.lines.keep_tol = cli.keep_tol;
     opts.marks.style = cli.marks;
@@ -193,8 +201,8 @@ fn bench(scene: &Scene, atlas: &Atlas, base: &Options, cols: usize, rows: usize)
         let (combs, holes, crosses) = m.look_avg();
         let flat = if m.has_ids { format!("{:.3}%", m.respell_flat_pct()) } else { "n/a".into() };
         println!(
-            "mode={} ms={:.2} changed={:.2}% flicker={:.3}% respell={} respell_flat={} combs={:.2} holes={:.2} crosses={:.2}",
-            mode.name(), total / 240.0, m.changed_pct(), m.flicker_pct(), respell, flat, combs, holes, crosses
+            "mode={} ms={:.2} changed={:.2}% flicker={:.3}% respell={} respell_flat={} combs={:.2} holes={:.2} crosses={:.2} cells={:.1}",
+            mode.name(), total / 240.0, m.changed_pct(), m.flicker_pct(), respell, flat, combs, holes, crosses, m.cells_avg()
         );
     }
 }

@@ -67,6 +67,8 @@ pub struct LineState {
     /// Cells that held a line glyph last frame (presence hysteresis).
     had: Vec<bool>,
     prev: Vec<Option<char>>,
+    /// Edge ids that survived the culls last frame (hysteresis for LOD and the parallel cull).
+    alive: std::collections::HashSet<u64>,
 }
 
 /// When the key misses (chain id or bucket changed at a junction), fall back to last frame's glyph in this cell with
@@ -96,6 +98,10 @@ pub struct LineParams {
     pub run_keep: f32,
     /// Mask corner and tee glyphs in cells with one straight direction.
     pub straight_mask: bool,
+    /// Draw only one of two nearly parallel edges that run closer than `PAR_DIST` cells.
+    pub parallel_cull: bool,
+    /// Skip edges whose chain is shorter than `LOD_ON` cells on screen.
+    pub lod: bool,
 }
 
 /// Glyphs a shallow run uses, top to bottom.
@@ -144,6 +150,152 @@ struct Piece {
     elig: u8,
 }
 
+/// One visible straight stretch of an edge, in cell units (any slope), for the culls.
+#[derive(Clone, Copy)]
+struct Span {
+    id: u64,
+    obj: u16,
+    va: u32,
+    vb: u32,
+    a: Vec2,
+    b: Vec2,
+    /// Silhouette edge (soft edge drawn only because it turns away), not a crease.
+    sil: bool,
+}
+
+/// Edges shorter than this on screen (chain length, cells) are not drawn when new ...
+const LOD_ON: f32 = 1.2;
+/// ... and a drawn one vanishes only below this.
+const LOD_OFF: f32 = 0.8;
+/// Two edges are chained for the LOD test when their directions differ by less than this (cos).
+const CHAIN_COS: f32 = 0.82;
+/// Parallel cull: angle limit (sine), distance limit (cells), and the least overlap as a fraction of the shorter edge.
+const PAR_SIN: f32 = 0.17;
+const PAR_DIST: f32 = 1.6;
+const PAR_OVERLAP: f32 = 0.35;
+const PAR_MIN_OVERLAP: f32 = 0.5;
+/// Score factors: silhouette over crease, and last frame's survivor over a challenger.
+const SIL_BONUS: f32 = 1.5;
+const KEEP_BONUS: f32 = 1.4;
+
+struct EdgeVis {
+    s: Span,
+    len: f32,
+}
+
+/// Edge ids to drop this frame: short chains (LOD), then the weaker of two near-parallel edges of one object.
+fn cull_edges(spans: &[Span], lod: bool, parallel: bool, alive: &std::collections::HashSet<u64>) -> std::collections::HashSet<u64> {
+    let mut dead = std::collections::HashSet::new();
+    // One entry per edge: its longest piece, total visible length.
+    let mut by_id: HashMap<u64, EdgeVis> = HashMap::new();
+    for &s in spans {
+        let l = (s.b - s.a).length();
+        let e = by_id.entry(s.id).or_insert(EdgeVis { s, len: 0.0 });
+        if l > (e.s.b - e.s.a).length() {
+            e.s = s;
+        }
+        e.len += l;
+    }
+    let mut edges: Vec<EdgeVis> = by_id.into_values().collect();
+    edges.sort_by_key(|e| e.s.id);
+    // Chains: edges of one object sharing a vertex and pointing the same way (a smooth silhouette is many short ones).
+    let n = edges.len();
+    let mut root: Vec<usize> = (0..n).collect();
+    fn find(r: &mut [usize], mut i: usize) -> usize {
+        while r[i] != i {
+            r[i] = r[r[i]];
+            i = r[i];
+        }
+        i
+    }
+    let mut at: HashMap<(u16, u32), Vec<usize>> = HashMap::new();
+    for (i, e) in edges.iter().enumerate() {
+        at.entry((e.s.obj, e.s.va)).or_default().push(i);
+        at.entry((e.s.obj, e.s.vb)).or_default().push(i);
+    }
+    for v in at.values() {
+        for (x, &i) in v.iter().enumerate() {
+            for &j in &v[x + 1..] {
+                let (di, dj) = ((edges[i].s.b - edges[i].s.a).normalize_or_zero(), (edges[j].s.b - edges[j].s.a).normalize_or_zero());
+                if di.dot(dj).abs() >= CHAIN_COS {
+                    let (ri, rj) = (find(&mut root, i), find(&mut root, j));
+                    root[ri] = rj;
+                }
+            }
+        }
+    }
+    let mut total = vec![0.0f32; n];
+    for (i, e) in edges.iter().enumerate() {
+        let r = find(&mut root, i);
+        total[r] += e.len;
+    }
+    let chain_len: Vec<f32> = (0..n).map(|i| total[find(&mut root, i)]).collect();
+    let chain_keep: Vec<f32> = if lod {
+        let mut keep = vec![true; n];
+        for (i, e) in edges.iter().enumerate() {
+            let thr = if alive.contains(&e.s.id) { LOD_OFF } else { LOD_ON };
+            if chain_len[i] < thr {
+                keep[i] = false;
+                dead.insert(e.s.id);
+            }
+        }
+        let mut k = 0;
+        edges.retain(|_| {
+            k += 1;
+            keep[k - 1]
+        });
+        (0..n).filter(|&i| keep[i]).map(|i| chain_len[i]).collect()
+    } else {
+        chain_len
+    };
+    if parallel {
+        let score = |i: usize| chain_keep[i] * if edges[i].s.sil { SIL_BONUS } else { 1.0 } * if alive.contains(&edges[i].s.id) { KEEP_BONUS } else { 1.0 };
+        let mut order: Vec<usize> = (0..edges.len()).collect();
+        order.sort_by(|&i, &j| score(j).total_cmp(&score(i)).then(edges[i].s.id.cmp(&edges[j].s.id)));
+        let mut gone = vec![false; edges.len()];
+        for (x, &i) in order.iter().enumerate() {
+            if gone[i] {
+                continue;
+            }
+            for &j in &order[x + 1..] {
+                if !gone[j] && parallel_pair(&edges[i].s, &edges[j].s) {
+                    gone[j] = true;
+                    dead.insert(edges[j].s.id);
+                }
+            }
+        }
+    }
+    dead
+}
+
+/// True if `b` lies alongside `a`: same object, no shared vertex, nearly parallel, close, and overlapping.
+fn parallel_pair(a: &Span, b: &Span) -> bool {
+    if a.obj != b.obj || a.va == b.va || a.va == b.vb || a.vb == b.va || a.vb == b.vb {
+        return false;
+    }
+    let (da, db) = (a.b - a.a, b.b - b.a);
+    let (la, lb) = (da.length(), db.length());
+    if la < 1e-3 || lb < 1e-3 {
+        return false;
+    }
+    let (ua, ub) = (da / la, db / lb);
+    if ua.perp_dot(ub).abs() > PAR_SIN {
+        return false;
+    }
+    // Along a's axis: a is [0, la]; b's ends.
+    let (t0, t1) = ((b.a - a.a).dot(ua), (b.b - a.a).dot(ua));
+    let (lo, hi) = (t0.min(t1).max(0.0), t0.max(t1).min(la));
+    let ov = hi - lo;
+    if ov < PAR_MIN_OVERLAP.min(la.min(lb)) || ov < PAR_OVERLAP * la.min(lb) {
+        return false;
+    }
+    // Point of b at the middle of the overlap.
+    let tm = 0.5 * (lo + hi);
+    let u = if (t1 - t0).abs() < 1e-6 { 0.5 } else { (tm - t0) / (t1 - t0) };
+    let p = b.a + (b.b - b.a) * u;
+    ua.perp_dot(p - a.a).abs() < PAR_DIST
+}
+
 /// A run keeps a cell it held last frame this far (cells) past its end.
 const END_KEEP: f32 = 0.3;
 /// Hysteresis for a run level: keep last frame's level unless the line is more than this many levels away.
@@ -151,7 +303,7 @@ const LEVEL_KEEP: f32 = 0.6;
 
 impl Default for LineParams {
     fn default() -> Self {
-        LineParams { crease_deg: 35.0, keep_margin: 2.0, keep_ink: KEEP_INK_EXTRA, keep_tol: 5.0, lineset: LineSet::Box, run_slope: 0.5, runset: RunSet::Scan, run_keep: LEVEL_KEEP, straight_mask: true }
+        LineParams { crease_deg: 35.0, keep_margin: 2.0, keep_ink: KEEP_INK_EXTRA, keep_tol: 5.0, lineset: LineSet::Box, run_slope: 0.5, runset: RunSet::Scan, run_keep: LEVEL_KEEP, straight_mask: true, parallel_cull: true, lod: true }
     }
 }
 
@@ -283,7 +435,7 @@ impl Vis<'_> {
 
 /// Entries of one edge (visible pieces clipped to cells).
 #[allow(clippy::too_many_arguments)]
-fn trace_edge(scene: &Scene, gb: &GBuffer, vis: &Vis, slope: f32, obj: usize, e: &Edge, out: &mut Vec<Entry>, pieces: &mut Vec<Piece>) {
+fn trace_edge(scene: &Scene, gb: &GBuffer, vis: &Vis, slope: f32, obj: usize, e: &Edge, sil: bool, out: &mut Vec<Entry>, pieces: &mut Vec<Piece>, spans: &mut Vec<Span>) {
     let o = &scene.objects[obj];
     let m = &o.mesh;
     let wa = o.model.transform_point3(m.verts[e.a as usize]);
@@ -319,12 +471,14 @@ fn trace_edge(scene: &Scene, gb: &GBuffer, vis: &Vis, slope: f32, obj: usize, e:
     };
     let mut pstart: Option<Vec2> = None;
     let mut plast = Vec2::ZERO;
-    let close = |pstart: &mut Option<Vec2>, plast: Vec2, pieces: &mut Vec<Piece>| {
+    let close = |pstart: &mut Option<Vec2>, plast: Vec2, pieces: &mut Vec<Piece>, spans: &mut Vec<Span>| {
         if let Some(a) = pstart.take()
-            && elig != 0
             && (plast - a).length() > 0.05
         {
-            pieces.push(Piece { id: e.id, obj: obj as u16, va: e.a, vb: e.b, a, b: plast, elig });
+            spans.push(Span { id: e.id, obj: obj as u16, va: e.a, vb: e.b, a, b: plast, sil });
+            if elig != 0 {
+                pieces.push(Piece { id: e.id, obj: obj as u16, va: e.a, vb: e.b, a, b: plast, elig });
+            }
         }
     };
     // Clip the screen segment to the buffer (screen-linear parameter s).
@@ -347,7 +501,7 @@ fn trace_edge(scene: &Scene, gb: &GBuffer, vis: &Vis, slope: f32, obj: usize, e:
         let cur = sp * cell_scale;
         if !vis.visible(sp.x, sp.y, d, o16) {
             prev = None;
-            close(&mut pstart, plast, pieces);
+            close(&mut pstart, plast, pieces, spans);
             continue;
         }
         if pstart.is_none() {
@@ -383,7 +537,7 @@ fn trace_edge(scene: &Scene, gb: &GBuffer, vis: &Vis, slope: f32, obj: usize, e:
         }
         prev = Some((cur, t));
     }
-    close(&mut pstart, plast, pieces);
+    close(&mut pstart, plast, pieces, spans);
     out.extend(mine.into_iter().map(|(mut en, tf, tl)| {
         en.t_mid = 0.5 * (tf + tl);
         en
@@ -758,7 +912,7 @@ pub fn render_lines(
     }
 
     // Candidate edges for this frame: (object, edge index).
-    let mut cand: Vec<(usize, usize)> = vec![];
+    let mut cand: Vec<(usize, usize, bool)> = vec![];
     for (oi, o) in scene.objects.iter().enumerate() {
         let cam_obj = o.model.inverse().transform_point3(gb.cam_pos);
         let m = &o.mesh;
@@ -774,28 +928,37 @@ pub fn render_lines(
                 if e.hard { f0 || f1 } else { f0 != f1 }
             };
             if keep {
-                cand.push((oi, ei));
+                cand.push((oi, ei, e.f1 != NO_FACE && front[e.f0 as usize] != front[e.f1 as usize]));
             }
         }
     }
 
     let vis = Vis { gb };
     let objs = &state.objs;
-    let traced: Vec<(Vec<Entry>, Vec<Piece>)> = cand
+    let traced: Vec<(Vec<Entry>, Vec<Piece>, Vec<Span>)> = cand
         .par_chunks(64)
         .map(|chunk| {
-            let (mut v, mut p) = (vec![], vec![]);
-            for &(oi, ei) in chunk {
-                trace_edge(scene, gb, &vis, params.run_slope, oi, &objs[oi].edges[ei], &mut v, &mut p);
+            let (mut v, mut p, mut sp) = (vec![], vec![], vec![]);
+            for &(oi, ei, sil) in chunk {
+                trace_edge(scene, gb, &vis, params.run_slope, oi, &objs[oi].edges[ei], sil, &mut v, &mut p, &mut sp);
             }
-            (v, p)
+            (v, p, sp)
         })
         .collect();
     let mut entries: Vec<Entry> = vec![];
     let mut pieces: Vec<Piece> = vec![];
-    for (e, p) in traced {
+    let mut spans: Vec<Span> = vec![];
+    for (e, p, sp) in traced {
         entries.extend(e);
         pieces.extend(p);
+        spans.extend(sp);
+    }
+    if params.lod || params.parallel_cull {
+        spans.sort_by(|a, b| a.id.cmp(&b.id).then(a.a.x.total_cmp(&b.a.x)).then(a.a.y.total_cmp(&b.a.y)));
+        let dead = cull_edges(&spans, params.lod, params.parallel_cull, &state.alive);
+        entries.retain(|e| !dead.contains(&e.id));
+        pieces.retain(|p| !dead.contains(&p.id));
+        state.alive = spans.iter().map(|s| s.id).filter(|id| !dead.contains(id)).collect();
     }
     let min_entry = MIN_ENTRY_LEN;
     entries.retain(|e| e.len_px() >= min_entry);
@@ -1222,5 +1385,47 @@ mod tests {
         p.keep_margin = 0.0;
         let (o3, ..) = run(&scene, &cam, &mut st, &p);
         assert_eq!(o3.glyphs[cell], Some(g));
+    }
+
+    fn span(id: u64, va: u32, vb: u32, a: (f32, f32), b: (f32, f32)) -> Span {
+        Span { id, obj: 0, va, vb, a: Vec2::new(a.0, a.1), b: Vec2::new(b.0, b.1), sil: false }
+    }
+
+    #[test]
+    fn parallel_edges_half_cell_apart_draw_once() {
+        let spans = [span(1, 0, 1, (0.0, 0.0), (10.0, 0.0)), span(2, 2, 3, (0.0, 0.5), (9.0, 0.5))];
+        let dead = cull_edges(&spans, false, true, &Default::default());
+        assert_eq!(dead.len(), 1);
+        assert!(dead.contains(&2), "the longer edge wins");
+        // Far apart: both stay. Off: both stay.
+        let far = [span(1, 0, 1, (0.0, 0.0), (10.0, 0.0)), span(2, 2, 3, (0.0, 4.0), (9.0, 4.0))];
+        assert!(cull_edges(&far, false, true, &Default::default()).is_empty());
+        assert!(cull_edges(&spans, false, false, &Default::default()).is_empty());
+    }
+
+    #[test]
+    fn parallel_winner_is_stable() {
+        let spans = [span(1, 0, 1, (0.0, 0.0), (10.0, 0.0)), span(2, 2, 3, (0.0, 0.5), (10.5, 0.5))];
+        let alive: std::collections::HashSet<u64> = [1].into_iter().collect();
+        let dead = cull_edges(&spans, false, true, &alive);
+        assert!(dead.contains(&2) && !dead.contains(&1), "last frame's survivor keeps the line");
+    }
+
+    #[test]
+    fn short_isolated_edge_is_dropped_but_chain_stays() {
+        let lone = [span(1, 0, 1, (0.0, 0.0), (0.8, 0.0))];
+        assert!(cull_edges(&lone, true, false, &Default::default()).contains(&1));
+        let chain = [span(1, 0, 1, (0.0, 0.0), (0.8, 0.0)), span(2, 1, 2, (0.8, 0.0), (1.6, 0.1))];
+        assert!(cull_edges(&chain, true, false, &Default::default()).is_empty());
+    }
+
+    #[test]
+    fn sixteen_sided_pillar_draws_only_rims_and_silhouette() {
+        let m = crate::scene::cylinder(0.35, 4.0, 16);
+        let edges = build_edges(&m, 0, 35.0);
+        // Only the cap rims are hard (horizontal); the vertical side facet edges are silhouette-only.
+        let hard: Vec<&Edge> = edges.iter().filter(|e| e.hard).collect();
+        assert!(!hard.is_empty());
+        assert!(hard.iter().all(|e| (m.verts[e.a as usize].y - m.verts[e.b as usize].y).abs() < 1e-6));
     }
 }
