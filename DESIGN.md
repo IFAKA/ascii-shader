@@ -85,7 +85,7 @@ Edges come from the **mesh**, not from image edge detection. So every line has a
 `--mode struct` (default, lines + marks) | `lines` | `marks` | `tone` | `edge`
 
 ## Scenes (src/scene.rs)
-Procedural meshes: cube, icosphere, torus, cylinder, plane, arch (half torus). Scenes:
+Procedural meshes: cube, icosphere, torus, cylinder, plane, arch_rib (rectangular stone rib swept on a half circle). Scenes:
 - `chapel` (default): floor, two rows of columns, arches between them, an altar box, a sphere.
 - `shapes`: cube, sphere, torus on a floor.
 - `--obj path` loads a Wavefront OBJ (v and f only).

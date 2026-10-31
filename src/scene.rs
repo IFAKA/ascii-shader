@@ -174,6 +174,48 @@ pub fn arch(major: f32, minor: f32, nu: usize, nv: usize) -> Mesh {
     torus_arc(major, minor, std::f32::consts::PI, nu, nv)
 }
 
+/// Stone rib: a rectangular cross-section (`depth` radial, `width` along z) swept along a half circle of
+/// radius `major` in the xy plane, `n` segments, closed ends. Segments are small, so only the four long
+/// edges and the two end caps are feature edges.
+pub fn arch_rib(major: f32, depth: f32, width: f32, n: usize) -> Mesh {
+    let (hd, hw) = (depth * 0.5, width * 0.5);
+    let corners = [(-hd, -hw), (hd, -hw), (hd, hw), (-hd, hw)];
+    let mut verts = vec![];
+    for i in 0..=n {
+        let (s, c) = (std::f32::consts::PI * i as f32 / n as f32).sin_cos();
+        for (dr, z) in corners {
+            verts.push(Vec3::new(c, s, 0.0) * (major + dr) + Vec3::Z * z);
+        }
+    }
+    let mut tris = vec![];
+    for i in 0..n {
+        for k in 0..4 {
+            let (a, b) = ((i * 4 + k) as u32, (i * 4 + (k + 1) % 4) as u32);
+            let (c, d) = (a + 4, b + 4);
+            tris.push([a, b, d]);
+            tris.push([a, d, c]);
+        }
+    }
+    for base in [0u32, (n * 4) as u32] {
+        tris.push([base, base + 1, base + 2]);
+        tris.push([base, base + 2, base + 3]);
+    }
+    let mut m = Mesh { verts, tris, normals: vec![] };
+    // Side k = 0 lies on the z = -width/2 face, so its outward normal has z < 0. Caps both face -y.
+    let nt = m.tris.len();
+    if m.face_normal(0).z > 0.0 {
+        for t in 0..nt - 4 {
+            m.tris[t].swap(1, 2);
+        }
+    }
+    for t in nt - 4..nt {
+        if m.face_normal(t).y > 0.0 {
+            m.tris[t].swap(1, 2);
+        }
+    }
+    m
+}
+
 /// Cylinder along +y from 0 to `h`. Smooth side normals, flat caps (separate vertices).
 pub fn cylinder(r: f32, h: f32, n: usize) -> Mesh {
     let mut verts = vec![];
@@ -375,7 +417,7 @@ impl Scene {
         s.add("floor", plane(24.0, 44.0, 1), Mat4::from_translation(Vec3::new(0.0, 0.0, -10.0)), 0);
         let col = cylinder(0.35, 4.0, 12);
         let boxm = cube();
-        let arch_m = arch(3.0, 0.2, 24, 8);
+        let arch_m = arch_rib(3.0, 0.3, 0.4, 32);
         for k in 0..4 {
             let z = -2.0 - 4.0 * k as f32;
             for side in [-3.0f32, 3.0] {
@@ -396,7 +438,7 @@ impl Scene {
         s.add("floor", plane(14.0, 14.0, 1), Mat4::IDENTITY, 0);
         s.add("cube", cube(), Mat4::from_translation(Vec3::new(-2.3, 0.6, 0.0)) * Mat4::from_scale(Vec3::splat(1.2)), 1);
         s.add("sphere", icosphere(3), Mat4::from_translation(Vec3::new(0.0, 0.8, 0.0)) * Mat4::from_scale(Vec3::splat(0.8)), 0);
-        s.add("torus", torus(0.7, 0.28, 32, 14), Mat4::from_translation(Vec3::new(2.4, 0.28, 0.0)) * Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2), 1);
+        s.add("torus", torus(0.7, 0.28, 32, 20), Mat4::from_translation(Vec3::new(2.4, 0.28, 0.0)) * Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2), 1);
         s
     }
 
@@ -441,7 +483,7 @@ mod tests {
 
     #[test]
     fn closed_meshes_outward() {
-        for m in [cube(), icosphere(2), cylinder(1.0, 2.0, 12), torus(1.0, 0.3, 16, 8)] {
+        for m in [cube(), icosphere(2), cylinder(1.0, 2.0, 12), torus(1.0, 0.3, 16, 8), arch_rib(3.0, 0.3, 0.4, 32)] {
             assert!(m.signed_volume() > 0.0);
         }
     }
