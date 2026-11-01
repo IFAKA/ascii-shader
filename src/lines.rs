@@ -180,6 +180,11 @@ const CHAIN_COS: f32 = 0.82;
 /// Parallel cull: angle limit (sine), distance limit (cells), and the least overlap as a fraction of the shorter edge.
 const PAR_SIN: f32 = 0.17;
 const PAR_DIST: f32 = 1.6;
+/// Shallow run next to a slanted glyph: the run's target height moves this fraction of the way (at most JOIN_MAX rows)
+/// toward the glyph's stroke end when that end is within JOIN_NEAR rows of the line at the column border.
+const JOIN_PULL: f32 = 0.5;
+const JOIN_MAX: f32 = 0.4;
+const JOIN_NEAR: f32 = 0.6;
 const PAR_OVERLAP: f32 = 0.35;
 /// Passes of majority smoothing of the cull along a chain.
 const CHAIN_SMOOTH: usize = 3;
@@ -871,11 +876,12 @@ fn run_claims(
     let mut new_mem = HashMap::new();
     // Mean spacing of the levels, in cell heights.
     let sp = if levels.len() > 1 { (levels[levels.len() - 1].1 - levels[0].1) / (levels.len() - 1) as f32 } else { 0.25 };
-    for pc in pieces {
-        if pc.elig >= 3 {
-            diag_claims(pc, mem, cols, rows, dg, &mut out, &mut new_mem);
-            continue;
-        }
+    for pc in pieces.iter().filter(|p| p.elig >= 3) {
+        diag_claims(pc, mem, cols, rows, dg, &mut out, &mut new_mem);
+    }
+    // Where a shallow run meets a slanted glyph, the run glyph is chosen to meet the slanted glyph's stroke end.
+    let slants: HashMap<usize, char> = out.iter().filter(|c| c.glyph == '╱' || c.glyph == '╲').map(|c| (c.cell, c.glyph)).collect();
+    for pc in pieces.iter().filter(|p| p.elig < 3) {
         let (a, b) = if pc.elig == 1 { if pc.a.x <= pc.b.x { (pc.a, pc.b) } else { (pc.b, pc.a) } } else if pc.a.y <= pc.b.y { (pc.a, pc.b) } else { (pc.b, pc.a) };
         if pc.elig == 1 {
             let k = (b.y - a.y) / (b.x - a.x).max(1e-6);
@@ -885,7 +891,29 @@ fn run_claims(
                 if x >= b.x + END_KEEP {
                     break;
                 }
-                let y = a.y + (x - a.x) * k;
+                let mut y = a.y + (x - a.x) * k;
+                // Stroke end of a slanted glyph in the neighbouring column, seen from this column, in rows; shift the target to meet it.
+                if JOIN_PULL > 0.0 {
+                    for (nc, toward_right) in [(c - 1, true), (c + 1, false)] {
+                        if nc < 0 || nc >= cols as i32 {
+                            continue;
+                        }
+                        let yb = y - k * 0.5 * if toward_right { 1.0 } else { -1.0 };
+                        for r in (yb.floor() as i32 - 1)..=(yb.floor() as i32 + 1) {
+                            if r < 0 || r >= rows as i32 {
+                                continue;
+                            }
+                            let Some(&g) = slants.get(&(r as usize * cols + nc as usize)) else { continue };
+                            // '╱' runs bottom-left to top-right, '╲' top-left to bottom-right.
+                            let top = (g == '╱') == toward_right;
+                            let end = r as f32 + if top { 0.0 } else { 1.0 };
+                            if (end - yb).abs() <= JOIN_NEAR {
+                                y += (end - yb).clamp(-JOIN_MAX, JOIN_MAX) * JOIN_PULL;
+                                break;
+                            }
+                        }
+                    }
+                }
                 let key = (pc.id, c, 1u8);
                 // Presence hysteresis: the ends of a run hold a cell they had last frame a little longer.
                 if !(x >= a.x && x < b.x) && !mem.contains_key(&key) {
