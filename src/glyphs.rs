@@ -203,6 +203,48 @@ pub const DEFAULT_FONT: &str = "/System/Library/Fonts/Menlo.ttc";
 mod tests {
     use super::*;
 
+    /// Weight census of the line glyphs: ink mass, centroid and elongation (1 = thin line, 0 = blob).
+    /// Prints one line per glyph, sorted by mass, and flags glyphs far from the median mass.
+    /// Run: `cargo test weight_census -- --nocapture`
+    #[test]
+    fn weight_census() {
+        let a = Atlas::load(DEFAULT_FONT, &all_chars()).unwrap();
+        let mut rows: Vec<(char, f32, f32, f32, f32, bool)> = vec![];
+        let mut seen = std::collections::HashSet::new();
+        for ch in ASCII_SET.chars().chain(BOX_SET.chars()).chain(RUN_SET.chars()) {
+            if !seen.insert(ch) {
+                continue;
+            }
+            let Some(g) = a.get(ch) else { continue };
+            let m: f32 = g.ink.iter().map(|i| i.2).sum();
+            if m <= 0.0 {
+                continue;
+            }
+            let cx = g.ink.iter().map(|i| i.2 * (i.0 as f32 + 0.5)).sum::<f32>() / m;
+            let cy = g.ink.iter().map(|i| i.2 * (i.1 as f32 + 0.5)).sum::<f32>() / m;
+            let (mut sxx, mut syy, mut sxy) = (0f32, 0f32, 0f32);
+            for &(x, y, c) in &g.ink {
+                let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
+                sxx += c * dx * dx;
+                syy += c * dy * dy;
+                sxy += c * dx * dy;
+            }
+            let (tr, det) = (sxx + syy, sxx * syy - sxy * sxy);
+            let disc = (tr * tr / 4.0 - det).max(0.0).sqrt();
+            let (l1, l2) = (tr / 2.0 + disc, tr / 2.0 - disc);
+            let ecc = if l1 > 0.0 { 1.0 - l2 / l1 } else { 0.0 };
+            rows.push((ch, m / (GW * GH) as f32 * 100.0, cx / GW as f32, cy / GH as f32, ecc, g.analytic));
+        }
+        rows.sort_by(|p, q| p.1.partial_cmp(&q.1).unwrap());
+        let med = rows[rows.len() / 2].1;
+        println!("median coverage {med:.1}%");
+        for (ch, cov, cx, cy, ecc, an) in &rows {
+            let flag = if *cov > 1.8 * med { "HEAVY" } else if *cov < 0.5 * med { "light" } else { "" };
+            println!("{ch} cov={cov:5.1}% col={cx:.2} row={cy:.2} elong={ecc:.2}{} {flag}", if *an { " analytic" } else { "" });
+        }
+        assert!(!rows.is_empty());
+    }
+
     #[test]
     fn run_glyph_report() {
         let a = Atlas::load(DEFAULT_FONT, &all_chars()).unwrap();
