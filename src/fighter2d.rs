@@ -245,13 +245,14 @@ pub const READY: Pose = pz((-0.5, 15.5), (2.5, 28.0), (4.5, 33.5), (10.0, 26.0),
 pub const DRAW: Pose = pz((2.0, 14.5), (7.0, 26.0), (10.0, 31.5), (14.0, 24.0), (-2.0, 20.0), (11.0, 0.0), (-9.0, 0.0), 5.0);
 pub const ANTICIP: Pose = pz((-4.5, 13.0), (-7.0, 25.0), (-7.5, 30.5), (-8.0, 27.0), (-11.5, 26.0), (3.0, 0.0), (-10.5, 0.0), 8.0);
 pub const STRIKE: Pose = pz((4.0, 15.0), (12.0, 25.5), (16.5, 30.5), (22.0, 27.0), (18.2, 26.0), (12.0, 0.0), (-10.5, 1.0), 3.0);
-pub const CLASH: Pose = pz((1.0, 14.0), (5.5, 25.5), (8.5, 31.0), (14.0, 28.0), (10.5, 26.0), (9.0, 0.0), (-8.5, 0.0), 52.0);
-pub const FOLLOW: Pose = pz((0.0, 11.5), (5.0, 22.5), (8.5, 27.5), (14.0, 13.5), (9.0, 12.0), (9.0, 0.5), (-9.0, 0.0), 8.0);
+/// Braced wide stance: front knee bent, back leg nearly straight, torso leaning into the blades.
+pub const CLASH: Pose = pz((1.5, 15.6), (7.0, 27.0), (10.5, 32.4), (15.5, 29.2), (12.0, 27.2), (10.0, 0.0), (-10.5, 0.0), 52.0);
+pub const FOLLOW: Pose = pz((0.0, 13.8), (5.0, 24.6), (8.5, 29.6), (14.0, 15.5), (9.0, 14.0), (9.5, 0.5), (-10.5, 0.0), 8.0);
 pub const RISE: Pose = pz((0.0, 16.0), (1.5, 28.5), (2.5, 34.0), (9.0, 24.0), (2.0, 22.0), (4.0, 0.0), (-4.0, 0.0), 70.0);
 pub const SHEATHED: Pose = pz((0.0, 19.4), (0.8, 31.8), (1.8, 36.6), (3.6, 19.8), (-0.8, 17.8), (2.5, 0.0), (-2.5, 0.0), 205.0);
 pub const HIT: Pose = pz((-2.0, 19.0), (-5.0, 31.0), (-7.2, 36.5), (-4.0, 27.0), (-9.0, 25.0), (2.0, 0.0), (-6.0, 0.5), -100.0);
 pub const PARRY: Pose = pz((-0.5, 16.0), (0.0, 28.5), (1.5, 34.0), (7.0, 40.0), (3.2, 38.5), (7.0, 0.0), (-6.0, 0.0), 40.0);
-pub const LOW: Pose = pz((2.0, 12.5), (8.0, 22.0), (11.5, 27.0), (15.0, 10.0), (11.0, 12.0), (11.0, 0.5), (-11.0, 0.0), -15.0);
+pub const LOW: Pose = pz((2.0, 14.0), (8.0, 23.5), (11.5, 28.5), (15.0, 11.5), (11.0, 13.5), (10.5, 0.5), (-12.0, 0.0), -15.0);
 pub const JUMP: Pose = pz((0.0, 30.0), (2.0, 42.0), (3.5, 47.5), (9.0, 50.0), (5.0, 49.0), (6.0, 22.0), (-4.0, 18.0), 120.0);
 pub const SPIN: Pose = pz((0.0, 15.0), (-1.0, 27.5), (-0.5, 33.0), (6.5, 25.0), (-5.0, 25.0), (6.0, 0.0), (-6.0, 0.0), 178.0);
 pub const SLASHD: Pose = pz((2.0, 14.0), (7.0, 26.0), (10.5, 31.5), (19.0, 22.0), (15.0, 25.0), (10.0, 0.0), (-10.0, 0.0), -40.0);
@@ -355,12 +356,14 @@ struct Pal {
     light: Col,
     hair: Col,
     skin: Col,
+    /// Trousers (near leg); the far leg is drawn darker.
+    leg: Col,
 }
 
 fn pal(w: Who) -> Pal {
     match w {
-        Who::Mio => Pal { main: CYAN, shade: [0.0, 120.0, 160.0], light: [200.0, 252.0, 255.0], hair: [0.0, 130.0, 190.0], skin: [225.0, 250.0, 255.0] },
-        Who::Kage => Pal { main: ORANGE, shade: [165.0, 75.0, 0.0], light: [255.0, 232.0, 160.0], hair: [215.0, 95.0, 0.0], skin: [255.0, 232.0, 190.0] },
+        Who::Mio => Pal { main: CYAN, shade: [0.0, 120.0, 160.0], light: [200.0, 252.0, 255.0], hair: [0.0, 130.0, 190.0], skin: [225.0, 250.0, 255.0], leg: [14.0, 52.0, 92.0] },
+        Who::Kage => Pal { main: ORANGE, shade: [165.0, 75.0, 0.0], light: [255.0, 232.0, 160.0], hair: [215.0, 95.0, 0.0], skin: [255.0, 232.0, 190.0], leg: [58.0, 36.0, 30.0] },
     }
 }
 
@@ -482,11 +485,11 @@ pub fn draw(cv: &mut Canvas, who: Who, at: &dyn Fn(f32) -> Fs, t: f32, tmin: f32
     let sp_tip = len(sub(blade(&cur, who).2, blade(&prev, who).2));
     // 1. ghosts
     if sp_body > 2.2 {
-        let n = ((sp_body / 2.5) as usize).clamp(1, 3);
+        let n = ((sp_body / 3.0) as usize).clamp(1, 2);
         cv.dither = true;
         for k in (1..=n).rev() {
             let g = at((t - 0.035 * k as f32).max(tmin));
-            let c = scale3(pl.main, 0.38 - 0.08 * k as f32);
+            let c = scale3(pl.main, 0.24 - 0.06 * k as f32);
             body(cv, &g, who, big, [c, c, c, c, c], false);
         }
         cv.dither = false;
@@ -494,7 +497,8 @@ pub fn draw(cv: &mut Canvas, who: Who, at: &dyn Fn(f32) -> Fs, t: f32, tmin: f32
     // 2. blade streak: the outer part of the blade swept over the last moments
     if sp_tip > 3.0 {
         let steps = 7;
-        let span = (0.10 + (sp_tip / 60.0).min(0.07)).min(0.17);
+        let span = (0.07 + (sp_tip / 90.0).min(0.04)).min(0.11);
+        cv.dither = true;
         let mut last: Option<(P, P)> = None;
         for k in 0..=steps {
             let tau = (t - span * k as f32 / steps as f32).max(tmin);
@@ -502,11 +506,12 @@ pub fn draw(cv: &mut Canvas, who: Who, at: &dyn Fn(f32) -> Fs, t: f32, tmin: f32
             let inner = lerp2(b0, tip, 0.6);
             if let Some((m0, t0)) = last {
                 let f = k as f32 / steps as f32;
-                let col = if f < 0.25 { mix3(WHITE, pl.light, f / 0.25) } else { mix3(pl.light, scale3(pl.main, 0.3), (f - 0.25) / 0.75) };
+                let col = scale3(if f < 0.25 { mix3(WHITE, pl.light, f / 0.25) } else { mix3(pl.light, scale3(pl.main, 0.3), (f - 0.25) / 0.75) }, 0.6 * (1.0 - 0.6 * f));
                 cv.poly(&[m0, t0, tip, inner], col);
             }
             last = Some((inner, tip));
         }
+        cv.dither = false;
     }
     // 3. cloth behind the body
     let wave = 0.8 + (sp_body / 3.0).min(2.5);
@@ -598,10 +603,11 @@ fn body_detail(cv: &mut Canvas, f: &Fs, who: Who, big: f32, pl: &Pal, drag: P) {
     let hp = m(add(j.hip, (0.0, -0.6)));
     // far limbs (dark)
     let far = scale3(pl.shade, 0.62);
+    let leg_far = scale3(pl.leg, 0.6);
     limb(cv, &[m(j.sh), m(j.el_f), m(j.ha_f)], [1.5, 1.3, 1.1], s, far);
     cv.disc(m(j.ha_f), 1.3 * s, scale3(pl.skin, 0.6));
-    limb(cv, &[hp, m(j.kn_f), m(j.ft_f)], [2.4, 1.9, 1.4], s, far);
-    cv.capsule(m(j.ft_f), m(add(j.ft_f, (2.2, 0.0))), 1.0 * s, 0.9 * s, far);
+    limb(cv, &[hp, m(j.kn_f), m(j.ft_f)], [2.4, 1.9, 1.4], s, leg_far);
+    cv.capsule(m(j.ft_f), m(add(j.ft_f, (2.2, 0.0))), 1.0 * s, 0.9 * s, leg_far);
     // torso, with a coat skirt for Kage and a short skirt for Mio
     let sp = norm(sub(j.chest, j.hip));
     let n = (sp.1, -sp.0);
@@ -614,12 +620,16 @@ fn body_detail(cv: &mut Canvas, f: &Fs, who: Who, big: f32, pl: &Pal, drag: P) {
         m(add(add(j.hip, mul(n, hw + 1.4)), mul(down, sk * 0.85))),
     ];
     cv.poly(&skirt, if who == Who::Kage { scale3(pl.main, 0.85) } else { scale3(pl.shade, 0.8) });
+    if who == Who::Kage {
+        // rim light along the coat hem separates the coat from the dark trousers
+        cv.capsule(skirt[2], skirt[3], 0.5 * s, 0.5 * s, scale3(pl.light, 0.85));
+    }
     torso(cv, f, tw, hw, s, mix3(pl.main, pl.shade, 0.5));
     // belt and chest highlight
     cv.capsule(m(add(j.hip, mul(n, hw))), m(add(j.hip, mul(n, -hw))), 0.9 * s, 0.9 * s, pl.light);
     cv.capsule(m(add(j.chest, add(mul(n, tw * 0.7), (0.0, -2.0)))), m(add(j.hip, add(mul(n, hw * 0.6), (0.0, 3.0)))), 0.6 * s, 0.6 * s, pl.light);
     // near leg (trousers, shade), boot
-    limb(cv, &[hp, m(j.kn_n), m(j.ft_n)], [2.5, 2.0, 1.4], s, if who == Who::Kage { scale3(pl.shade, 0.75) } else { scale3(pl.shade, 0.9) });
+    limb(cv, &[hp, m(j.kn_n), m(j.ft_n)], [2.5, 2.0, 1.4], s, pl.leg);
     cv.capsule(m(j.ft_n), m(add(j.ft_n, (2.6, 0.0))), 1.1 * s, 1.0 * s, pl.light);
     // neck, head and hair
     cv.capsule(m(add(j.chest, (0.0, -1.0))), m(j.head), 1.5 * s, 1.5 * s, scale3(pl.skin, 0.8));

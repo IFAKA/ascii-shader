@@ -186,7 +186,7 @@ fn slow_fs(who: Who, t: f32) -> Fs {
     let dir = if mio { 1.0 } else { -1.0 };
     let sc = if mio { 1.0 } else { 1.06 };
     let io = |a: f32, b: f32, t0: f32, t1: f32, e: fn(f32) -> f32| lerp(a, b, e(clamp01((t - t0) / (t1 - t0))));
-    let x = io(24.0, 33.0, 3.5, 4.3, smooth) + io(0.0, -2.5, 4.3, 4.55, smooth) + io(0.0, 27.5, 4.55, 4.95, ease_in) + io(0.0, 34.0, 4.95, 5.12, smooth) + io(0.0, 16.0, 5.12, 5.55, ease_out);
+    let x = io(24.0, 33.0, 3.5, 4.3, smooth) + io(0.0, -2.5, 4.3, 4.55, smooth) + io(0.0, 27.5, 4.55, 4.95, ease_in) + io(0.0, 29.0, 4.95, 5.12, smooth) + io(0.0, 16.0, 5.12, 5.55, ease_out);
     let x = if mio { x } else { COLS as f32 - x };
     let pose = seq(
         &[
