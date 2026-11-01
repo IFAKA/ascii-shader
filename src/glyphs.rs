@@ -91,6 +91,8 @@ fn seg_dist(px: f32, py: f32, a: (f32, f32), b: (f32, f32)) -> f32 {
     ((px - a.0 - t * dx).powi(2) + (py - a.1 - t * dy).powi(2)).sqrt()
 }
 
+const RUN_WEIGHT: f32 = 0.58;
+
 /// Analytic masks for box-drawing and block chars (used only when the font lacks them).
 fn analytic_mask(ch: char) -> Option<Vec<f32>> {
     let (cx, cy) = (GW as f32 / 2.0, GH as f32 / 2.0);
@@ -137,7 +139,8 @@ fn analytic_mask(ch: char) -> Option<Vec<f32>> {
                 c = c.max((1.5 - seg_dist(px, py, a, b)).clamp(0.0, 1.0));
             }
             if let Some((x0, y0, x1, y1)) = rect && px >= x0 && px <= x1 && py >= y0 && py <= y1 {
-                c = 1.0;
+                // Run glyphs are 2 rows tall; scaled so their ink mass matches Menlo's `─` (7.2% vs 12.5%).
+                c = if matches!(ch, '⎺' | '⎻' | '⎼' | '⎽') { RUN_WEIGHT } else { 1.0 };
             }
             m[y * GW + x] = c;
         }
