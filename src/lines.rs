@@ -181,6 +181,15 @@ const CHAIN_COS: f32 = 0.82;
 const PAR_SIN: f32 = 0.17;
 const PAR_DIST: f32 = 1.6;
 const PAR_OVERLAP: f32 = 0.35;
+/// Passes of majority smoothing of the cull along a chain.
+const CHAIN_SMOOTH: usize = 3;
+/// Steep lines (unit |dy| above STEEP_DY): strands of one rib stagger along the axis, so overlap is measured against a's span
+/// widened by PAR_SLIP of its length each end (only when more than PAR_SLIP_MIN_DIST apart: closer is the same line continuing),
+/// and a wide rib near the camera gets PAR_STEEP extra distance.
+const STEEP_DY: f32 = 0.6;
+const PAR_SLIP: f32 = 1.0;
+const PAR_SLIP_MIN_DIST: f32 = 0.7;
+const PAR_STEEP: f32 = 1.4;
 const PAR_MIN_OVERLAP: f32 = 0.5;
 /// Score factors: silhouette over crease, and last frame's survivor over a challenger.
 const SIL_BONUS: f32 = 1.5;
@@ -239,8 +248,8 @@ fn cull_edges(spans: &[Span], lod: bool, parallel: bool, alive: &std::collection
     }
     let chain_len: Vec<f32> = (0..n).map(|i| total[find(&mut root, i)]).collect();
     let chain_of: HashMap<u64, f32> = edges.iter().zip(&chain_len).map(|(e, &l)| (e.s.id, l)).collect();
-    let chain_keep: Vec<f32> = if lod {
-        let mut keep = vec![true; n];
+    let mut keep = vec![true; n];
+    if lod {
         for (i, e) in edges.iter().enumerate() {
             let thr = if alive.contains(&e.s.id) { LOD_OFF } else { LOD_ON };
             if chain_len[i] < thr {
@@ -248,29 +257,57 @@ fn cull_edges(spans: &[Span], lod: bool, parallel: bool, alive: &std::collection
                 dead.insert(e.s.id);
             }
         }
-        let mut k = 0;
-        edges.retain(|_| {
-            k += 1;
-            keep[k - 1]
-        });
-        (0..n).filter(|&i| keep[i]).map(|i| chain_len[i]).collect()
-    } else {
-        chain_len
-    };
+    }
     if parallel {
-        let score = |i: usize| chain_keep[i] * if edges[i].s.sil { SIL_BONUS } else { 1.0 } * if alive.contains(&edges[i].s.id) { KEEP_BONUS } else { 1.0 };
-        let mut order: Vec<usize> = (0..edges.len()).collect();
-        order.sort_by(|&i, &j| score(j).total_cmp(&score(i)).then(edges[i].s.id.cmp(&edges[j].s.id)));
-        let mut gone = vec![false; edges.len()];
-        for (x, &i) in order.iter().enumerate() {
-            if gone[i] {
-                continue;
+        // Whole chains: a chain goes when most of its length runs alongside a stronger chain (per-edge culling left gaps).
+        let roots: Vec<usize> = (0..n).map(|i| find(&mut root, i)).collect();
+        let mut members: HashMap<usize, Vec<usize>> = HashMap::new();
+        for i in (0..n).filter(|&i| keep[i]) {
+            members.entry(roots[i]).or_default().push(i);
+        }
+        let mut chains: Vec<(f32, usize)> = members
+            .iter()
+            .map(|(&r, m)| {
+                let sil = m.iter().any(|&i| edges[i].s.sil);
+                let was = m.iter().any(|&i| alive.contains(&edges[i].s.id));
+                (chain_len[m[0]] * if sil { SIL_BONUS } else { 1.0 } * if was { KEEP_BONUS } else { 1.0 }, r)
+            })
+            .collect();
+        chains.sort_by(|x, y| y.0.total_cmp(&x.0).then(edges[members[&x.1][0]].s.id.cmp(&edges[members[&y.1][0]].s.id)));
+        let mut rank = vec![usize::MAX; n];
+        for (x, c) in chains.iter().enumerate() {
+            for &i in &members[&c.1] {
+                rank[i] = x;
             }
-            for &j in &order[x + 1..] {
-                if !gone[j] && parallel_pair(&edges[i].s, &edges[j].s) {
-                    gone[j] = true;
-                    dead.insert(edges[j].s.id);
+        }
+        // Raw decision per edge: lies alongside an edge of a stronger chain.
+        let live: Vec<usize> = (0..n).filter(|&i| keep[i]).collect();
+        let mut raw = vec![false; n];
+        for &w in &live {
+            raw[w] = live.iter().any(|&s| rank[s] < rank[w] && alongside(&edges[s].s, &edges[w].s));
+        }
+        // Smooth along the chain (majority of an edge and its chain neighbours) so a strand goes whole, not in dashes.
+        let mut nbr: Vec<Vec<usize>> = vec![Vec::new(); n];
+        for v in at.values() {
+            for (x, &i) in v.iter().enumerate() {
+                for &j in &v[x + 1..] {
+                    if keep[i] && keep[j] && roots[i] == roots[j] {
+                        nbr[i].push(j);
+                        nbr[j].push(i);
+                    }
                 }
+            }
+        }
+        for _ in 0..CHAIN_SMOOTH {
+            let prev = raw.clone();
+            for &i in &live {
+                let d = prev[i] as u32 + nbr[i].iter().filter(|&&j| prev[j]).count() as u32;
+                raw[i] = 2 * d >= 1 + nbr[i].len() as u32 + (nbr[i].len() as u32 & 1 == 0) as u32;
+            }
+        }
+        for &i in &live {
+            if raw[i] {
+                dead.insert(edges[i].s.id);
             }
         }
     }
@@ -278,7 +315,7 @@ fn cull_edges(spans: &[Span], lod: bool, parallel: bool, alive: &std::collection
 }
 
 /// True if `b` lies alongside `a`: same object, no shared vertex, nearly parallel, close, and overlapping.
-fn parallel_pair(a: &Span, b: &Span) -> bool {
+fn alongside(a: &Span, b: &Span) -> bool {
     if a.obj != b.obj || a.va == b.va || a.va == b.vb || a.vb == b.va || a.vb == b.vb {
         return false;
     }
@@ -293,7 +330,9 @@ fn parallel_pair(a: &Span, b: &Span) -> bool {
     }
     // Along a's axis: a is [0, la]; b's ends.
     let (t0, t1) = ((b.a - a.a).dot(ua), (b.b - a.a).dot(ua));
-    let (lo, hi) = (t0.min(t1).max(0.0), t0.max(t1).min(la));
+    let steep = ua.y.abs() > STEEP_DY;
+    let slip = if steep && ua.perp_dot(0.5 * (b.a + b.b) - a.a).abs() > PAR_SLIP_MIN_DIST { PAR_SLIP } else { 0.0 };
+    let (lo, hi) = (t0.min(t1).max(-slip * la), t0.max(t1).min((1.0 + slip) * la));
     let ov = hi - lo;
     if ov < PAR_MIN_OVERLAP.min(la.min(lb)) || ov < PAR_OVERLAP * la.min(lb) {
         return false;
@@ -302,7 +341,7 @@ fn parallel_pair(a: &Span, b: &Span) -> bool {
     let tm = 0.5 * (lo + hi);
     let u = if (t1 - t0).abs() < 1e-6 { 0.5 } else { (tm - t0) / (t1 - t0) };
     let p = b.a + (b.b - b.a) * u;
-    ua.perp_dot(p - a.a).abs() < PAR_DIST
+    ua.perp_dot(p - a.a).abs() < PAR_DIST + if steep { PAR_STEEP } else { 0.0 }
 }
 
 const STUB_CHAIN: f32 = 3.0;
