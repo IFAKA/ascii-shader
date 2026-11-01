@@ -547,7 +547,7 @@ pub(crate) fn frame_rgb(f: &FilmFrame, atlas: &Atlas, rgb_out: &mut [u8]) {
 fn text_atlas(font: &str) -> Result<Atlas, String> {
     let mut chars = glyphs::all_chars();
     chars.extend(' '..='~');
-    chars.extend("█▒─│·".chars());
+    chars.extend("█▒─│·▘▝▀▖▌▞▛▗▚▐▜▄▙▟".chars());
     chars.sort();
     chars.dedup();
     Atlas::load(font, &chars)

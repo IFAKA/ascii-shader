@@ -2,6 +2,7 @@
 //! 120 BPM: a beat is 0.5 s = 12 frames at 24 fps. The last frame is black like the first, so it loops.
 //! `events()` is the single source of truth for the sound: tools/pv_short_audio.py reads it (`--film-events`).
 use super::*;
+use crate::fighter2d::{self, ANTICIP, CLASH, Canvas, Ease, FOLLOW, Fs, Fx, HIT, Key, READY, RISE, RUN, SHEATHED, STRIKE, fs, run_pose, seq};
 
 const SHORT_SECS: f32 = 10.0;
 
@@ -86,6 +87,18 @@ pub fn events_json() -> String {
     format!("{{\"fps\":{FPS},\"duration\":{SHORT_SECS},\"bpm\":120,\"events\":[\n{}\n]}}\n", e.join(",\n"))
 }
 
+/// Where two line segments cross, if they do.
+pub(super) fn crossing(a0: (f32, f32), a1: (f32, f32), b0: (f32, f32), b1: (f32, f32)) -> Option<(f32, f32)> {
+    let (d1, d2) = ((a1.0 - a0.0, a1.1 - a0.1), (b1.0 - b0.0, b1.1 - b0.1));
+    let den = d1.0 * d2.1 - d1.1 * d2.0;
+    if den.abs() < 1e-4 {
+        return None;
+    }
+    let t = ((b0.0 - a0.0) * d2.1 - (b0.1 - a0.1) * d2.0) / den;
+    let u = ((b0.0 - a0.0) * d1.1 - (b0.1 - a0.1) * d1.0) / den;
+    ((0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u)).then_some((a0.0 + t * d1.0, a0.1 + t * d1.1))
+}
+
 fn paper_on(t: f32) -> bool {
     IMPACTS_S.iter().any(|&(a, d)| t >= a - 1e-4 && t < a + d - 1e-4)
 }
@@ -118,41 +131,80 @@ fn fade(t: f32) -> f32 {
     }
 }
 
-/// (mio, kage, sparks, speed-line amount) for the 3D shots.
-fn actors(k: K, t: f32) -> (Option<Place>, Option<Place>, Option<f32>, f32) {
-    match k {
-        K::Dash(_) => {
-            let s = ease_in(clamp01((t - 1.5) / 1.5));
-            let ph = if (t * 7.0) as i32 % 2 == 0 { run_a() } else { run_b() };
-            let p = if t > 2.9 { strike() } else { ph };
-            let sp = 0.3 + 0.7 * clamp01((t - 1.5) / 1.4);
-            (mio_at(lerp(-2.8, -0.55, s), 0.0, p), kage_at(lerp(2.8, 0.55, s), 0.0, p), None, sp)
+/// Where a fighter is and which drawing it is on, at absolute time `t` (seconds). Mio comes from the left, Kage is
+/// the mirror image from the right. Each shot has its own framing; the cloth chains never look back past `shot_start`.
+fn fs_at(who: Who, t: f32) -> Fs {
+    let mio = who == Who::Mio;
+    let dir = if mio { 1.0 } else { -1.0 };
+    let sc = if mio { 1.0 } else { 1.06 };
+    let mx = |x: f32| if mio { x } else { COLS as f32 - x };
+    let fx = |x: f32, gy: f32, s: f32| Fx { x: mx(x), gy, s: s * sc, dir };
+    let io = |a: f32, b: f32, t0: f32, t1: f32, e: fn(f32) -> f32| lerp(a, b, e(clamp01((t - t0) / (t1 - t0))));
+    if t < 2.5 {
+        // wide dash: sprinting in, sword still sheathed behind
+        let x = io(-2.0, 40.0, 1.5, 2.5, |u| u.powf(1.5));
+        fs(run_pose(t), fx(x, 68.0, 0.85), t, 1.0)
+    } else if t < 3.0 {
+        // closer: sprint, pull back (anticipation), lunge
+        let x = io(10.0, 33.0, 2.5, 2.75, smooth) + io(0.0, -4.0, 2.75, 2.83, smooth) + io(0.0, 11.0, 2.83, 2.93, ease_out);
+        let pose = if t < 2.75 { run_pose(t) } else { seq(&[Key(2.75, run_pose(2.75), 0.0, Ease::Io), Key(2.83, ANTICIP, 0.08, Ease::Io), Key(2.93, STRIKE, 0.1, Ease::Out)], t) };
+        fs(pose, fx(x, 72.0, 1.1), t, 1.0)
+    } else if t < 3.5 {
+        // blades crossed, pressing
+        let u = (t - 3.0) / 0.5;
+        let press = (t * 38.0).sin() * 0.8 * (1.0 - u);
+        let shake = (h((t * 24.0) as u32 * 3 + 1) - 0.5) * 2.4 * (1.0 - u);
+        let g = 76.0 +(h((t * 24.0) as u32 * 3 + 2) - 0.5) * 1.6 * (1.0 - u);
+        let pose = CLASH.lerp(&STRIKE, 0.0);
+        let mut f = fs(pose, fx(49.0 + press + shake, g, 1.5), t, 2.5);
+        if !mio {
+            f.pose.bl = 46.0;
         }
-        K::Clash => (mio_at(-0.55, 0.0, strike()), kage_at(0.55, 0.0, strike()), Some(0.9 - 0.8 * (t - 3.0) / 0.5), 0.0),
-        K::Slow => {
-            let creep = (t - 3.5) / 1.1;
-            let s = ease_in(clamp01((t - 4.6) / 0.5));
-            let (xm, xk) = if t < 4.6 { (lerp(-2.4, -1.8, clamp01(creep)), lerp(2.4, 1.8, clamp01(creep))) } else { (lerp(-1.8, 1.1, s), lerp(1.8, -1.1, s)) };
-            let keys = [(3.5, ready()), (4.6, ready()), (4.95, strike())];
-            let pose = chars::track(&keys, t, 0.35);
-            let sp = if (4.95..5.3).contains(&t) { Some(0.7 - 0.5 * (t - 4.95) / 0.35) } else { None };
-            (
-                Some(Place { pos: Vec3::new(xm, 0.0, 0.25), yaw: MIO_YAW, pose }),
-                Some(Place { pos: Vec3::new(xk, 0.0, -0.25), yaw: KAGE_YAW, pose }),
-                sp,
-                0.0,
-            )
-        }
-        _ => {
-            let sway = (t * 2.0).sin() * 0.02;
-            (
-                Some(Place { pos: Vec3::new(1.0, 0.0, 0.0), yaw: MIO_YAW, pose: after_pose().with(&[(OX, sway), (OZ, 0.0), (HEAD, 0.0)]) }),
-                Some(Place { pos: Vec3::new(-1.0, 0.0, 0.0), yaw: KAGE_YAW, pose: after_pose() }),
-                None,
-                0.0,
-            )
+        f
+    } else if t < 5.75 {
+        slow_fs(who, t)
+    } else {
+        let s = 1.45;
+        let g = 80.0;
+        if mio {
+            let p = seq(
+                &[Key(5.75, FOLLOW, 0.0, Ease::Io), Key(6.45, FOLLOW, 0.0, Ease::Io), Key(6.85, RISE, 0.4, Ease::Io), Key(7.2, SHEATHED, 0.35, Ease::Io)],
+                t,
+            );
+            fs(p, fx(108.0, g, s), t, 1.0)
+        } else {
+            let p = seq(&[Key(5.75, FOLLOW, 0.0, Ease::Io), Key(6.4, FOLLOW, 0.0, Ease::Io), Key(6.52, HIT, 0.12, Ease::Out), Key(7.4, SHEATHED, 0.9, Ease::Io)], t);
+            let x = 108.0 + io(0.0, -3.0, 6.4, 6.6, ease_out);
+            fs(p, fx(x, g, s), t, 1.0)
         }
     }
+}
+
+/// The slow-motion pass: stand off, crouch, lunge, cross at 5.0, follow through.
+fn slow_fs(who: Who, t: f32) -> Fs {
+    let mio = who == Who::Mio;
+    let dir = if mio { 1.0 } else { -1.0 };
+    let sc = if mio { 1.0 } else { 1.06 };
+    let io = |a: f32, b: f32, t0: f32, t1: f32, e: fn(f32) -> f32| lerp(a, b, e(clamp01((t - t0) / (t1 - t0))));
+    let x = io(24.0, 33.0, 3.5, 4.3, smooth) + io(0.0, -2.5, 4.3, 4.55, smooth) + io(0.0, 27.5, 4.55, 4.95, ease_in) + io(0.0, 34.0, 4.95, 5.12, smooth) + io(0.0, 16.0, 5.12, 5.55, ease_out);
+    let x = if mio { x } else { COLS as f32 - x };
+    let pose = seq(
+        &[
+            Key(3.5, READY, 0.0, Ease::Io),
+            Key(4.3, READY, 0.0, Ease::Io),
+            Key(4.55, ANTICIP, 0.25, Ease::Io),
+            Key(4.82, RUN[1], 0.27, Ease::In),
+            Key(4.95, STRIKE, 0.13, Ease::Out),
+            Key(5.2, STRIKE, 0.0, Ease::Io),
+            Key(5.6, FOLLOW, 0.4, Ease::Io),
+        ],
+        t,
+    );
+    fs(pose, Fx { x, gy: 72.0, s: 1.15 * sc, dir }, t, 1.0)
+}
+
+fn shot_start(k: K) -> f32 {
+    SHOTS.iter().find(|s| matches!((s.3, k), (K::Dash(a), K::Dash(b)) if a == b) || (std::mem::discriminant(&s.3) == std::mem::discriminant(&k) && !matches!(k, K::Dash(_)))).map(|s| s.0).unwrap_or(0.0)
 }
 
 fn camera(k: K, t: f32, fq: usize) -> Camera {
@@ -181,7 +233,7 @@ fn camera(k: K, t: f32, fq: usize) -> Camera {
 pub fn prerender(atlas: &Atlas, opts: &Options) -> Vec<FilmFrame> {
     let total = (SHORT_SECS * FPS as f32) as usize;
     let mut frames = Vec::with_capacity(total);
-    let (mut scene, fm, fk) = build_scene();
+    let mut scene = build_scene();
     let mut renderer = Renderer::default();
     let mut cur = usize::MAX;
     let mut base = vec![BLANK; COLS * ROWS];
@@ -236,9 +288,6 @@ pub fn prerender(atlas: &Atlas, opts: &Options) -> Vec<FilmFrame> {
                 }
                 K::Dash(_) | K::Clash | K::Slow | K::After => {
                     scene.light_dir = Vec3::new(0.4, 0.8, 0.5).normalize();
-                    let (m, k, sp, speed) = actors(kind, tq);
-                    let pm = m.as_ref().map(|p| chars::place(&mut scene, fm, Who::Mio, p.pos, p.yaw, &p.pose, tq));
-                    let pk = k.as_ref().map(|p| chars::place(&mut scene, fk, Who::Kage, p.pos, p.yaw, &p.pose, tq));
                     let camera = camera(kind, tq, fq);
                     let frame = renderer.render(&scene, &camera, atlas, opts, COLS, ROWS);
                     let mut back = vec![BLANK; COLS * ROWS];
@@ -262,9 +311,10 @@ pub fn prerender(atlas: &Atlas, opts: &Options) -> Vec<FilmFrame> {
                             *b = *c;
                         }
                     }
-                    if let (Some(a), Some(b), Some(kk)) = (&pm, &pk, sp) {
-                        sparks(&mut base, &camera, (a.tip + b.tip) * 0.5, kk, fq as u32 * 17);
-                    }
+                    let speed = match kind {
+                        K::Dash(_) => 0.3 + 0.7 * clamp01((tq - 1.5) / 1.4),
+                        _ => 0.0,
+                    };
                     let close = !matches!(kind, K::Dash(0));
                     if speed > 0.0 {
                         speed_lines(&mut base, fq as u32, if close { 22 } else { 50 }, 0.32 + 0.1 * h(fq as u32), [200.0, 225.0, 255.0], speed);
@@ -272,6 +322,24 @@ pub fn prerender(atlas: &Atlas, opts: &Options) -> Vec<FilmFrame> {
                     cel::embers(&mut base, tq, if close { 10 } else { 40 }, ORANGE, CYAN, 1.0);
                     if paper {
                         speed_lines(&mut base, fq as u32 + 3, if close { 35 } else { 90 }, 0.1, WHITE, 1.0);
+                    }
+                    // the two fighters, drawn as 2D cels over the backdrop
+                    let t0 = shot_start(kind);
+                    let (am, ak) = (|t: f32| fs_at(Who::Mio, t), |t: f32| fs_at(Who::Kage, t));
+                    let mut cv = Canvas::default();
+                    fighter2d::draw(&mut cv, Who::Kage, &ak, tq, t0);
+                    fighter2d::draw(&mut cv, Who::Mio, &am, tq, t0);
+                    cv.clear_halo(&mut base, 1);
+                    cv.blit(&mut base);
+                    let spark = match kind {
+                        K::Clash => Some(0.9 - 0.8 * (tq - 3.0) / 0.5),
+                        K::Slow if (4.95..5.3).contains(&tq) => Some(0.7 - 0.5 * (tq - 4.95) / 0.35),
+                        _ => None,
+                    };
+                    if let Some(kk) = spark {
+                        let (a, b) = (fighter2d::blade(&am(tq), Who::Mio), fighter2d::blade(&ak(tq), Who::Kage));
+                        let at = if matches!(kind, K::Clash) { crossing(a.0, a.2, b.0, b.2).unwrap_or(((a.2.0 + b.2.0) * 0.5, (a.2.1 + b.2.1) * 0.5)) } else { ((a.2.0 + b.2.0) * 0.5, (a.2.1 + b.2.1) * 0.5) };
+                        fighter2d::sparks(&mut base, at, kk, fq as u32 * 17, WHITE, ORANGE);
                     }
                     if matches!(kind, K::After) {
                         let slope = -0.55;

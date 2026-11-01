@@ -58,7 +58,7 @@ cargo run --release -- --film-stills "out/stills:2.8,14.1,24.5" # PNG stills at 
 
 Ready-made video: [docs/pv.mp4](docs/pv.mp4). The older 30 s short ORB is still there: add `--story orb` (soundtrack `tools/film_audio.py`, video [docs/orb.mp4](docs/orb.mp4)).
 
-Code: `src/pv.rs` (shot list, choreography), `src/chars.rs` (fighters from primitives, pose angles), `src/cel.rs` (block font, eye cels, slash/split, grid, moon, embers), `src/film.rs` (shared video and terminal output).
+Code: `src/pv.rs` (shot list, choreography), `src/fighter2d.rs` (2D cel fighters: key poses, easing, cloth chains, blade streaks), `src/cel.rs` (block font, eye cels, slash/split, grid, moon, embers), `src/film.rs` (shared video and terminal output).
 
 ### ONE CUT short (10 s, for X / Reddit / Bluesky)
 

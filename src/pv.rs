@@ -1,13 +1,13 @@
 //! ONE CUT: the 30 s teaser PV. 120 BPM, so a beat is 0.5 s and a bar is 2 s; every cut lands on a beat.
 //! Everything is terminal cells. The same frames are played in the terminal and drawn into the MP4.
 use crate::cel::{self, CYAN, Col, Eye, ORANGE, Txt, WHITE};
-use crate::chars::{self, ARM_L, ARM_R, HEAD, HY, LEAN, LEG_L, LEG_R, OX, OZ, Pose, SW_P, SW_Q, TWIST, Who, stand};
+use crate::fighter2d::{self, ANTICIP, CLASH, Canvas, DRAW, Ease, FOLLOW, Fs, Fx, HILT, HIT, JUMP, Key, LOW, PARRY, Pose, READY, RISE, SHEATHED, SLASHD, SPIN, STAND, STRIKE, Who, fs, run_pose, seq};
 use crate::compose::{BLANK, Cell};
-use crate::film::{BAR_ROWS, COLS, FPS, FilmFrame, INK, PAPER, PI, ROWS, clamp01, ease_in, ease_out, h, lerp, mix3, project, put, rgb, scale3, smooth, speed_lines};
+use crate::film::{BAR_ROWS, COLS, FPS, FilmFrame, INK, PAPER, PI, ROWS, clamp01, ease_in, ease_out, h, lerp, mix3, put, rgb, scale3, smooth, speed_lines};
 use crate::glyphs::Atlas;
 use crate::render::{Options, Renderer};
 use crate::scene::{self, Camera, Object, Scene};
-use glam::{Mat4, Vec3, Vec4};
+use glam::{Mat4, Vec3};
 
 #[path = "pvshort.rs"]
 pub mod short;
@@ -70,74 +70,10 @@ const TEXTS: [Txt; 6] = [
     Txt { t0: 0.0, t1: 0.0, text: "", y: 0, dw: 1, dh: 1, col: WHITE },
 ];
 
-struct Place {
-    pos: Vec3,
-    yaw: f32,
-    pose: Pose,
-}
-
-struct View {
-    cam: Camera,
-    mio: Option<Place>,
-    kage: Option<Place>,
-    sparks: Option<f32>,
-    speed: f32,
-    moon: bool,
-    shake: f32,
-}
-
-const MIO_YAW: f32 = PI / 2.0;
-const KAGE_YAW: f32 = -PI / 2.0;
-
 fn cam(pos: Vec3, target: Vec3, fov: f32) -> Camera {
     let mut c = Camera::look_at(pos, target);
     c.fov_y = fov.to_radians();
     c
-}
-
-// ---- poses (angles in radians; see chars.rs) ----
-fn ready() -> Pose {
-    stand().limb(ARM_L, [0.9, 0.1, 1.2]).limb(ARM_R, [1.0, 0.15, 1.2]).limb(LEG_L, [0.55, 0.15, 0.7]).limb(LEG_R, [-0.35, 0.15, 0.5]).with(&[(LEAN, 0.12), (SW_P, 0.5), (SW_Q, 0.05)])
-}
-fn hand_on_hilt() -> Pose {
-    stand().limb(ARM_R, [0.55, 0.1, 1.0]).limb(ARM_L, [0.5, 0.2, 0.9]).limb(LEG_L, [0.3, 0.1, 0.3]).limb(LEG_R, [-0.2, 0.1, 0.2]).with(&[(SW_P, -0.2), (SW_Q, 0.2), (LEAN, 0.08)])
-}
-fn draw_pose() -> Pose {
-    stand().limb(ARM_R, [-0.5, 0.35, 0.5]).limb(ARM_L, [0.5, 0.2, 0.9]).limb(LEG_L, [0.75, 0.2, 0.9]).limb(LEG_R, [-0.55, 0.25, 0.35]).with(&[(LEAN, 0.3), (TWIST, 0.35), (SW_P, 0.0), (SW_Q, 1.25)])
-}
-fn run_a() -> Pose {
-    stand().limb(LEG_L, [0.95, 0.05, 1.15]).limb(LEG_R, [-0.85, 0.05, 0.25]).limb(ARM_L, [-0.6, 0.1, 0.9]).limb(ARM_R, [-0.9, 0.1, 0.5]).with(&[(LEAN, 0.55), (SW_P, 0.1), (SW_Q, 2.95)])
-}
-fn run_b() -> Pose {
-    stand().limb(LEG_L, [-0.85, 0.05, 0.25]).limb(LEG_R, [0.95, 0.05, 1.15]).limb(ARM_L, [0.9, 0.1, 0.9]).limb(ARM_R, [-0.5, 0.1, 0.6]).with(&[(LEAN, 0.55), (SW_P, 0.1), (SW_Q, 2.95)])
-}
-fn strike() -> Pose {
-    stand().limb(LEG_L, [1.15, 0.1, 0.35]).limb(LEG_R, [-0.95, 0.2, 0.05]).limb(ARM_R, [1.45, 0.0, 0.15]).limb(ARM_L, [-0.4, 0.9, 0.6]).with(&[(LEAN, 0.5), (SW_P, 0.02), (SW_Q, 0.0)])
-}
-fn parry_high() -> Pose {
-    ready().limb(ARM_R, [2.5, 0.3, 0.5]).limb(ARM_L, [2.3, 0.1, 0.7]).with(&[(LEAN, -0.1), (SW_P, 0.15), (SW_Q, 1.35)])
-}
-fn low_slash() -> Pose {
-    ready().limb(ARM_R, [0.6, 0.9, 0.4]).limb(LEG_L, [0.9, 0.5, 1.0]).limb(LEG_R, [-0.7, 0.5, 0.3]).with(&[(LEAN, 0.6), (SW_P, -0.35), (SW_Q, 1.1), (TWIST, -0.3)])
-}
-fn jump_pose() -> Pose {
-    stand().limb(LEG_L, [1.3, 0.15, 1.8]).limb(LEG_R, [0.7, 0.15, 1.4]).limb(ARM_R, [3.0, 0.2, 0.4]).limb(ARM_L, [2.2, 0.6, 0.5]).with(&[(HY, 2.1), (LEAN, 0.2), (SW_P, 1.1), (SW_Q, 0.3)])
-}
-fn spin_pose() -> Pose {
-    ready().limb(ARM_R, [1.5, 1.2, 0.2]).limb(ARM_L, [1.2, 1.3, 0.3]).with(&[(TWIST, 1.1), (LEAN, 0.2), (SW_P, 0.0), (SW_Q, 1.6)])
-}
-fn slash_down() -> Pose {
-    strike().limb(ARM_R, [2.4, 0.1, 0.3]).with(&[(SW_P, -0.9), (SW_Q, 0.0), (LEAN, 0.7)])
-}
-fn after_pose() -> Pose {
-    stand().with(&[(LEAN, 0.12), (HEAD, 0.0)])
-}
-
-fn mio_at(x: f32, z: f32, pose: Pose) -> Option<Place> {
-    Some(Place { pos: Vec3::new(x, 0.0, z), yaw: MIO_YAW, pose })
-}
-fn kage_at(x: f32, z: f32, pose: Pose) -> Option<Place> {
-    Some(Place { pos: Vec3::new(x, 0.0, z), yaw: KAGE_YAW, pose })
 }
 
 fn shake(fq: usize, amp: f32) -> Vec3 {
@@ -145,10 +81,9 @@ fn shake(fq: usize, amp: f32) -> Vec3 {
 }
 
 /// What is in each 3D shot. The camera is chosen after the fighters are placed (some shots follow a hand or a blade).
-fn view(id: u8, t: f32, fq: usize, pm: &Option<chars::Posed>, pk: &Option<chars::Posed>) -> Camera {
+fn view(id: u8, t: f32, fq: usize) -> Camera {
     let (t0, t1, _, _) = CUTS.iter().find(|c| matches!(c.3, Kind::Shot(i) if i == id)).copied().unwrap();
     let u = (t - t0) / (t1 - t0);
-    let _ = (pm, pk);
     let mid = Vec3::new(0.0, 1.2, 0.0);
     match id {
         0 => cam(Vec3::new(0.0, lerp(0.7, 1.1, u), lerp(9.0, 6.6, u)), Vec3::new(0.0, 1.5, 0.0), 42.0),
@@ -177,68 +112,153 @@ fn view(id: u8, t: f32, fq: usize, pm: &Option<chars::Posed>, pk: &Option<chars:
     }
 }
 
-fn fighters(id: u8, t: f32) -> (Option<Place>, Option<Place>, Option<f32>, f32) {
-    let (t0, t1, _, _) = CUTS.iter().find(|c| matches!(c.3, Kind::Shot(i) if i == id)).copied().unwrap();
-    let u = (t - t0) / (t1 - t0);
-    let g = |keys: &[(f32, Pose)], snap: f32| chars::track(keys, t, snap);
+/// Screen placement and pose of a fighter in a 2D shot. `x` counts columns from the fighter's own side
+/// (Mio from the left edge, Kage from the right), so the same number makes a mirrored layout.
+fn put2(who: Who, x: f32, gy: f32, s: f32, pose: Pose, t: f32) -> Option<Fs> {
+    let mio = who == Who::Mio;
+    let fx = Fx { x: if mio { x } else { COLS as f32 - x }, gy, s: if mio { s } else { s * 1.06 }, dir: if mio { 1.0 } else { -1.0 } };
+    Some(fs(pose, fx, t, 1.0))
+}
+
+fn shot_t0(id: u8) -> f32 {
+    CUTS.iter().find(|c| matches!(c.3, Kind::Shot(i) if i == id)).map(|c| c.0).unwrap()
+}
+
+/// The two fighters of a shot as 2D cels, as a function of time (the cloth re-evaluates it at earlier times).
+/// Returns None when the fighter is not in the shot. The 3D camera only draws the backdrop.
+fn fighters(id: u8, who: Who, t: f32) -> Option<Fs> {
+    let mio = who == Who::Mio;
+    let t0 = shot_t0(id);
+    let u = clamp01((t - t0) / (CUTS.iter().find(|c| matches!(c.3, Kind::Shot(i) if i == id)).map(|c| c.1 - c.0).unwrap()));
+    let io = |a: f32, b: f32, ta: f32, tb: f32, e: fn(f32) -> f32| lerp(a, b, e(clamp01((t - ta) / (tb - ta))));
+    let k = |keys: &[Key]| seq(keys, t);
+    let arc = |ta: f32, tb: f32, h: f32| h * (clamp01((t - ta) / (tb - ta)) * PI).sin();
+    let shake = |amp: f32| (h((t * 24.0) as u32 * 3 + 1) - 0.5) * 2.0 * amp;
     match id {
-        0 => (mio_at(-4.0, 0.0, g(&[(6.0, stand()), (7.3, stand()), (7.5, ready())], 0.3)), kage_at(4.0, 0.0, g(&[(6.0, stand()), (7.4, stand()), (7.6, ready())], 0.3)), None, 0.0),
-        1 => (mio_at(-4.0, 0.0, g(&[(8.0, stand()), (8.1, hand_on_hilt())], 0.2)), kage_at(4.0, 0.0, stand()), None, 0.0),
-        2 => (mio_at(-4.0, 0.0, hand_on_hilt()), kage_at(4.0, 0.0, g(&[(8.5, stand()), (8.6, hand_on_hilt())], 0.2)), None, 0.0),
-        3 => (mio_at(-4.0, 0.0, ready().lerp(&hand_on_hilt(), 0.5)), kage_at(4.0, 0.0, ready()), None, 0.0),
-        4 => (mio_at(-4.0, 0.0, ready()), kage_at(4.0, 0.0, ready().lerp(&hand_on_hilt(), 0.5)), None, 0.0),
-        5 => (
-            mio_at(-3.5, 0.0, g(&[(11.0, ready()), (11.4, ready()), (11.55, draw_pose())], 0.12)),
-            kage_at(3.5, 0.0, g(&[(11.0, ready()), (11.5, ready()), (11.65, draw_pose())], 0.12)),
-            None,
-            0.0,
-        ),
+        0 => {
+            let p = if mio {
+                k(&[Key(6.0, STAND, 0.0, Ease::Io), Key(7.15, STAND, 0.0, Ease::Io), Key(7.3, ANTICIP, 0.15, Ease::Io), Key(7.5, READY, 0.2, Ease::Out)])
+            } else {
+                k(&[Key(6.0, STAND, 0.0, Ease::Io), Key(7.25, STAND, 0.0, Ease::Io), Key(7.4, ANTICIP, 0.15, Ease::Io), Key(7.6, READY, 0.2, Ease::Out)])
+            };
+            put2(who, 44.0, 70.0, 0.9, p, t)
+        }
+        1 | 2 => {
+            if mio != (id == 1) {
+                return None;
+            }
+            let tk = if id == 1 { 8.0 } else { 8.5 };
+            let p = k(&[Key(tk, STAND, 0.0, Ease::Io), Key(tk + 0.1, HILT, 0.1, Ease::Out)]);
+            put2(who, 66.0 + 10.0 * u, 84.0, 1.65, p, t)
+        }
+        3 | 4 => {
+            let hero = (id == 3) == mio;
+            let p = if hero { READY.lerp(&HILT, 0.5) } else { READY };
+            put2(who, 36.0 - 3.0 * u, 80.0, 1.5, p, t)
+        }
+        5 => {
+            let (ta, tb) = if mio { (11.35, 11.55) } else { (11.4, 11.65) };
+            let p = k(&[Key(11.0, READY, 0.0, Ease::Io), Key(ta, READY, 0.0, Ease::Io), Key(ta + 0.1, ANTICIP, 0.1, Ease::Io), Key(tb, DRAW, 0.12, Ease::Out)]);
+            put2(who, 46.0, 72.0, 1.1, p, t)
+        }
         6 => {
-            let k = ease_in(clamp01((t - 12.0) / 1.0));
-            let ph = |x: f32| if ((x * 3.0) as i32) % 2 == 0 { run_a() } else { run_b() };
-            let p = ph(t * 5.0);
-            (mio_at(lerp(-4.0, -2.2, k), 0.0, p), kage_at(lerp(4.0, 2.2, k), 0.0, p), None, 0.8)
+            let x = io(14.0, 40.0, 12.0, 13.0, |u| u.powf(1.4));
+            put2(who, x, 70.0, 0.9, run_pose(t), t)
         }
         7 => {
-            let k = ease_in(clamp01((t - 13.0) / 0.85));
-            let ph = if (t * 14.0) as i32 % 2 == 0 { run_a() } else { run_b() };
-            let p = if t > 13.85 { strike() } else { ph };
-            (mio_at(lerp(-2.2, -0.55, k), 0.0, p), kage_at(lerp(2.2, 0.55, k), 0.0, p), None, 0.9)
+            let x = io(24.0, 40.0, 13.0, 13.7, |u| u.powf(1.3)) + io(0.0, -3.0, 13.7, 13.78, smooth) + io(0.0, 11.0, 13.78, 13.88, ease_out);
+            let p = k(&[Key(13.0, run_pose(13.0), 0.0, Ease::Io), Key(13.7, run_pose(13.7), 0.0, Ease::Io), Key(13.78, ANTICIP, 0.08, Ease::Io), Key(13.88, STRIKE, 0.1, Ease::Out)]);
+            let p = if t < 13.7 { run_pose(t) } else { p };
+            put2(who, x, 74.0, 1.25, p, t)
         }
-        8 => (mio_at(-0.55, 0.0, strike()), kage_at(0.55, 0.0, strike()), Some(0.5 * u + 0.1), 0.0),
-        9 => (mio_at(-0.55, 0.0, strike()), kage_at(0.55, 0.0, strike()), Some(0.6 + u * 0.3), 0.0),
-        10 => (mio_at(-0.6, 0.0, parry_high()), kage_at(0.6, 0.0, slash_down()), Some(0.3), 0.0),
-        11 => (mio_at(-1.5, 0.0, jump_pose()), kage_at(1.4, 0.0, low_slash()), None, 0.4),
-        12 => (mio_at(-0.9, 0.0, parry_high()), kage_at(0.9, 0.0, low_slash()), Some(0.2), 0.0),
-        13 => (mio_at(-0.8, 0.0, spin_pose().lerp(&strike(), u)), kage_at(0.9, 0.0, parry_high()), None, 0.5),
-        14 => (mio_at(-1.0, 0.0, strike()), kage_at(1.0, 0.0, parry_high()), Some(0.2 + u), 0.0),
-        15 => (mio_at(-0.5, 0.0, strike()), kage_at(0.5, 0.0, strike()), Some(0.1 + u * 0.3), 0.0),
-        16 => (mio_at(-1.0, 0.0, low_slash()), kage_at(1.3, 0.0, jump_pose()), None, 0.4),
+        8 | 9 | 15 => {
+            let big = id != 9;
+            let r = 1.0 - u;
+            let press = (t * 38.0).sin() * 0.8 * r + shake(1.2 * r);
+            let mut f = put2(who, if big { 49.0 } else { 53.0 } + press, if big { 76.0 } else { 64.0 } + shake(0.8 * r), if big { 1.5 } else { 1.0 }, CLASH, t)?;
+            if !mio {
+                f.pose.bl = 46.0;
+            }
+            Some(f)
+        }
+        10 => {
+            let p = if mio {
+                k(&[Key(t0, READY, 0.0, Ease::Io), Key(t0 + 0.08, READY, 0.0, Ease::Io), Key(t0 + 0.2, PARRY, 0.1, Ease::Out)])
+            } else {
+                k(&[Key(t0, ANTICIP, 0.0, Ease::Io), Key(t0 + 0.1, ANTICIP, 0.0, Ease::Io), Key(t0 + 0.2, SLASHD, 0.1, Ease::Out)])
+            };
+            put2(who, 50.0 + if mio { 0.0 } else { 3.0 }, 76.0, 1.4, p, t)
+        }
+        11 | 16 => {
+            let jumper = (id == 11) == mio;
+            if jumper {
+                let p = k(&[Key(t0, ANTICIP, 0.0, Ease::Io), Key(t0 + 0.1, ANTICIP, 0.0, Ease::Io), Key(t0 + 0.2, JUMP, 0.12, Ease::Out), Key(t0 + 0.42, RISE, 0.2, Ease::In)]);
+                put2(who, io(52.0, 88.0, t0 + 0.1, t0 + 0.45, smooth), 84.0 - arc(t0 + 0.1, t0 + 0.45, 6.0), 1.0, p, t)
+            } else {
+                let p = k(&[Key(t0, READY, 0.0, Ease::Io), Key(t0 + 0.1, ANTICIP, 0.1, Ease::Io), Key(t0 + 0.25, LOW, 0.12, Ease::Out)]);
+                put2(who, 44.0, 84.0, 1.0, p, t)
+            }
+        }
+        12 => {
+            let p = if mio { PARRY } else { LOW };
+            put2(who, 52.0 + shake(0.6 * (1.0 - u)), 78.0, 1.5, p, t)
+        }
+        13 => {
+            let p = if mio {
+                k(&[Key(t0, SPIN, 0.0, Ease::Io), Key(t0 + 0.25, SPIN, 0.0, Ease::Io), Key(t0 + 0.4, STRIKE, 0.15, Ease::Out)])
+            } else {
+                k(&[Key(t0, READY, 0.0, Ease::Io), Key(t0 + 0.3, PARRY, 0.15, Ease::Out)])
+            };
+            put2(who, 50.0, 76.0, 1.35, p, t)
+        }
+        14 => {
+            let p = if mio { STRIKE } else { PARRY };
+            put2(who, 49.0 + if mio { 0.0 } else { 2.0 }, 76.0, 1.4, p, t)
+        }
         17 => {
-            // both leap apart
-            let k = ease_out(u);
-            (mio_at(lerp(-1.0, -4.5, k), 0.0, jump_pose()), kage_at(lerp(1.0, 4.5, k), 0.0, jump_pose()), None, 0.0)
+            let e = ease_out(u);
+            let p = k(&[Key(t0, ANTICIP, 0.0, Ease::Io), Key(t0 + 0.08, JUMP, 0.1, Ease::Out), Key(t0 + 0.4, RISE, 0.25, Ease::Io)]);
+            put2(who, lerp(52.0, 14.0, e), 82.0 - arc(t0, t0 + 0.5, 6.0), 1.0, p, t)
         }
         18 => {
-            // slow motion: crouch, then the last lunge
-            let (m, k) = (g(&[(20.0, ready()), (21.2, ready()), (21.55, strike())], 0.35), g(&[(20.0, ready()), (21.2, ready()), (21.55, strike())], 0.35));
-            let s = ease_in(clamp01((t - 21.2) / 0.4));
-            (mio_at(lerp(-2.4, -0.6, s), 0.0, m), kage_at(lerp(2.4, 0.6, s), 0.0, k), None, 0.0)
+            let x = io(26.0, 34.0, 20.0, 21.2, smooth) + io(0.0, -3.0, 21.2, 21.3, smooth) + io(0.0, 22.0, 21.3, 21.55, ease_in);
+            let p = k(&[Key(20.0, READY, 0.0, Ease::Io), Key(21.2, READY, 0.0, Ease::Io), Key(21.3, ANTICIP, 0.1, Ease::Io), Key(21.55, STRIKE, 0.25, Ease::Out)]);
+            put2(who, x, 74.0, 1.2, p, t)
         }
         _ => {
-            // aftermath: they have passed each other
-            let sway = (t * 2.0).sin() * 0.02;
-            (
-                Some(Place { pos: Vec3::new(1.0, 0.0, 0.0), yaw: MIO_YAW, pose: after_pose().with(&[(OX, sway), (OZ, 0.0), (HEAD, 0.0)]) }),
-                Some(Place { pos: Vec3::new(-1.0, 0.0, 0.0), yaw: KAGE_YAW, pose: after_pose() }),
-                None,
-                0.0,
-            )
+            // aftermath: back to back, then the cut lands on Kage
+            let p = if mio {
+                k(&[Key(22.0, FOLLOW, 0.0, Ease::Io), Key(23.2, FOLLOW, 0.0, Ease::Io), Key(23.55, RISE, 0.4, Ease::Io), Key(23.9, SHEATHED, 0.35, Ease::Io)])
+            } else {
+                k(&[Key(22.0, FOLLOW, 0.0, Ease::Io), Key(22.9, FOLLOW, 0.0, Ease::Io), Key(23.0, HIT, 0.12, Ease::Out), Key(23.9, SHEATHED, 0.9, Ease::Io)])
+            };
+            let x = 108.0 + if mio { 0.0 } else { io(0.0, -3.0, 22.9, 23.1, ease_out) };
+            put2(who, x, 80.0, 1.45, p, t)
         }
     }
 }
 
-fn build_scene() -> (Scene, usize, usize) {
+/// (spark strength, speed-line strength) for a shot at time t.
+fn shot_fx(id: u8, t: f32) -> (Option<f32>, f32) {
+    let t0 = shot_t0(id);
+    let u = clamp01((t - t0) / 0.5);
+    match id {
+        6 => (None, 0.8),
+        7 => (None, 0.9),
+        8 => (Some(0.8 - 0.5 * u), 0.0),
+        9 => (Some(0.7 - 0.3 * u), 0.0),
+        10 if t >= t0 + 0.2 => (Some(0.6 - 0.4 * u), 0.0),
+        11 | 16 => (None, 0.4),
+        12 => (Some(0.5 - 0.3 * u), 0.0),
+        13 if t >= t0 + 0.4 => (Some(0.5), 0.5),
+        13 => (None, 0.5),
+        14 => (Some(0.7 - 0.4 * u), 0.0),
+        15 => (Some(0.6 - 0.3 * u), 0.0),
+        _ => (None, 0.0),
+    }
+}
+
+fn build_scene() -> Scene {
     let mut s = Scene::empty(Camera::look_at(Vec3::new(0.0, 1.5, 8.0), Vec3::new(0.0, 1.2, 0.0)), Vec3::new(0.0, 1.2, 0.0));
     // skyline: towers around the arena
     for i in 0..26u32 {
@@ -250,26 +270,7 @@ fn build_scene() -> (Scene, usize, usize) {
     // arena rim
     s.objects.push(Object { name: "rim".into(), mesh: scene::torus(16.0, 0.12, 64, 6), model: Mat4::from_translation(Vec3::new(0.0, 0.1, 0.0)) * Mat4::from_rotation_x(PI / 2.0), class: 0 });
     s.objects.push(Object { name: "rim2".into(), mesh: scene::torus(8.0, 0.06, 48, 6), model: Mat4::from_translation(Vec3::new(0.0, 0.05, 0.0)) * Mat4::from_rotation_x(PI / 2.0), class: 2 });
-    let a = chars::add_fighter(&mut s, Who::Mio);
-    let b = chars::add_fighter(&mut s, Who::Kage);
-    (s, a, b)
-}
-
-fn sparks(cells: &mut [Cell], cam: &Camera, at: Vec3, k: f32, seed: u32) {
-    let Some((cx, cy, _)) = project(cam, Vec4::new(at.x, at.y, at.z, 1.0)) else { return };
-    for i in 0..30u32 {
-        let ang = h(seed + i * 5) * 2.0 * PI;
-        let len = (3.0 + 16.0 * h(seed + i * 5 + 1)) * (0.3 + k);
-        let (dx, dy) = (ang.cos(), ang.sin());
-        let ch = crate::film::line_char(dx, dy);
-        let mut r = 1.0;
-        while r < len {
-            let (x, y) = ((cx + dx * r).floor() as i32, (cy + dy * r / 2.0).floor() as i32);
-            let f = r / len;
-            put(cells, x, y, ch, mix3(WHITE, ORANGE, f), f < 0.5);
-            r += 0.6;
-        }
-    }
+    s
 }
 
 fn eye_cel(who: Who, variant: u8, t: f32, tl: f32) -> (Vec<Cell>, Eye) {
@@ -350,7 +351,7 @@ fn fade_amount(t: f32) -> f32 {
 pub fn prerender(atlas: &Atlas, opts: &Options) -> Vec<FilmFrame> {
     let total = (SECS * FPS as f32) as usize;
     let mut frames = Vec::with_capacity(total);
-    let (mut scene, fm, fk) = build_scene();
+    let mut scene = build_scene();
     let mut renderer = Renderer::default();
     let mut cur = usize::MAX;
     let mut base = vec![BLANK; COLS * ROWS];
@@ -402,15 +403,8 @@ pub fn prerender(atlas: &Atlas, opts: &Options) -> Vec<FilmFrame> {
                 }
                 Kind::Shot(id) => {
                     scene.light_dir = Vec3::new(0.4, 0.8, 0.5).normalize();
-                    let (m, k, sp, speed) = fighters(id, tq);
-                    for (pl, first) in [(&m, fm), (&k, fk)] {
-                        if pl.is_none() {
-                            chars::hide(&mut scene, first);
-                        }
-                    }
-                    let pm = m.as_ref().map(|p| chars::place(&mut scene, fm, Who::Mio, p.pos, p.yaw, &p.pose, tq));
-                    let pk = k.as_ref().map(|p| chars::place(&mut scene, fk, Who::Kage, p.pos, p.yaw, &p.pose, tq));
-                    let camera = view(id, tq, fq, &pm, &pk);
+                    let (spark, speed) = shot_fx(id, tq);
+                    let camera = view(id, tq, fq);
                     let frame = renderer.render(&scene, &camera, atlas, opts, COLS, ROWS);
                     // backdrop: moon, grid, then drop everything the geometry covers
                     let mut back = vec![BLANK; COLS * ROWS];
@@ -431,8 +425,30 @@ pub fn prerender(atlas: &Atlas, opts: &Options) -> Vec<FilmFrame> {
                             *b = *c;
                         }
                     }
-                    if let (Some(a), Some(b), Some(kk)) = (&pm, &pk, sp) {
-                        sparks(&mut base, &camera, (a.tip + b.tip) * 0.5, kk, fq as u32 * 17);
+                    let close = matches!(id, 3 | 4 | 8 | 11 | 12 | 14 | 15 | 16);
+                    if speed > 0.0 {
+                        speed_lines(&mut base, fq as u32, if close { 16 } else { 50 }, 0.32 + 0.1 * h(fq as u32), [200.0, 225.0, 255.0], speed);
+                    }
+                    cel::embers(&mut base, tq, if close { 10 } else { 40 }, ORANGE, CYAN, 1.0);
+                    if paper {
+                        speed_lines(&mut base, fq as u32 + 3, if close { 35 } else { 90 }, 0.1, WHITE, 1.0);
+                    }
+                    // the fighters, drawn as 2D cels over the backdrop
+                    let t0 = shot_t0(id);
+                    let (am, ak) = (|t: f32| fighters(id, Who::Mio, t), |t: f32| fighters(id, Who::Kage, t));
+                    let mut cv = Canvas::default();
+                    if ak(tq).is_some() {
+                        fighter2d::draw(&mut cv, Who::Kage, &|t| ak(t).unwrap(), tq, t0);
+                    }
+                    if am(tq).is_some() {
+                        fighter2d::draw(&mut cv, Who::Mio, &|t| am(t).unwrap(), tq, t0);
+                    }
+                    cv.clear_halo(&mut base, 1);
+                    cv.blit(&mut base);
+                    if let (Some(kk), Some(a), Some(b)) = (spark, am(tq), ak(tq)) {
+                        let (a, b) = (fighter2d::blade(&a, Who::Mio), fighter2d::blade(&b, Who::Kage));
+                        let at = short::crossing(a.0, a.2, b.0, b.2).unwrap_or(((a.2.0 + b.2.0) * 0.5, (a.2.1 + b.2.1) * 0.5));
+                        fighter2d::sparks(&mut base, at, kk, fq as u32 * 17, WHITE, ORANGE);
                     }
                     let close = matches!(id, 3 | 4 | 8 | 11 | 12 | 14 | 15 | 16);
                     if speed > 0.0 {

@@ -3,7 +3,7 @@
 mod baseline;
 mod compose;
 mod cel;
-mod chars;
+mod fighter2d;
 mod film;
 mod pv;
 mod glyphs;
@@ -180,6 +180,7 @@ fn main() {
         let frames = match cli.story.as_str() {
             "orb" => film::prerender(&atlas, &opts),
             "pvshort" => pv::short::prerender(&atlas, &opts),
+            "poses" => fighter2d::pose_sheet(),
             _ => pv::prerender(&atlas, &opts),
         };
         if let Some(spec) = &cli.film_stills {
