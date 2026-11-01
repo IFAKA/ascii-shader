@@ -1,6 +1,22 @@
 # ascii-shader
 
-![demo](docs/demo.gif)
+![ONE CUT: an anime made of terminal text](docs/pv-short.gif)
+
+**An anime made only of terminal text.** The same frames play in your terminal and as an MP4. Lines and marks instead of brightness ramps, so it does not flicker when the camera moves.
+
+[Watch the 30 s teaser](docs/pv.mp4) | [10 s cut with sound](docs/pv-short.mp4)
+
+## Try it (2 minutes)
+
+```
+cargo install --git https://github.com/IFAKA/ascii-shader
+ascii-shader --play-film          # the 30 s film, in a 160x45 terminal (Esc quits)
+ascii-shader                      # the interactive 3D chapel
+```
+
+Prebuilt binaries for macOS and Linux are on the [Releases](https://github.com/IFAKA/ascii-shader/releases) page.
+
+![chapel demo](docs/demo.gif)
 
 A Rust terminal renderer that draws 3D scenes with thin lines and small marks instead of brightness ramps like `.:-=+*#`. It spells the edges of a mesh with line glyphs (`|`, `_`, `/`, box-drawing characters) and keeps a memory of each spelling, so the picture stays calm when the camera moves.
 
