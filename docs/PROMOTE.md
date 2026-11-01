@@ -20,21 +20,35 @@ Use these two lines every time, so people learn them.
 3. Repo topics: `ascii`, `terminal`, `rust`, `renderer`, `anime`, `shader`.
 4. Upload the 30 s MP4 to YouTube (title: "ONE CUT - an anime made of terminal text"). Link the repo in the description.
 
-## Week 1: launch (one place per day, not all at once)
-| Day | Where | What to post |
+## Starting point (checked 2026-11-01)
+- X @itsfaka: 13 followers, 5 posts. Posts to followers reach almost nobody. Reach comes from replies on other people's posts.
+- Reddit: every past post was a link to own project plus "feedback please". Best result: the open-source diffusion course (8 upvotes, 2.3K views, educational). App posts got 0 to 1 upvotes.
+- Hacker News: no account. HN limits Show HN from accounts with little history, so build history first.
+Sources: [HN karma and Show HN limits](https://news.ycombinator.com/item?id=47718520), [HN account warm-up](https://scout7.ai/academy/launch/how-to-post-a-show-hn-on-hacker-news), [Reddit self-promo rules](https://parsestream.com/guides/reddit-self-promotion-rules), [10% guideline](https://byog.red/guides/reddit-self-promotion-rules/), [reply method on X](https://indieradar.app/blog/reply-guy-method-grow-x-twitter-zero-followers). These are mostly growth blogs; some numbers are unverified. Read each subreddit's rules page yourself.
+
+## Weeks 1 to 4: earn the right to post
+Daily (15 to 20 minutes):
+- X: reply with real value to 10 to 20 accounts of 5K to 50K followers in ASCII art, creative coding, terminal tools and Rust. Reply early on their posts. When they answer, answer back. Share a fact, a number or a short clip, not "great post".
+- HN: make the account today. Leave 1 to 3 careful comments a day on Rust, terminal and graphics threads where you know the topic. Short, honest, no links to your project, no AI-written text.
+- Reddit: comment in r/rust, r/commandline, r/asciiart, r/creativecoding. Answer questions. No project links yet.
+
+Posts:
+| When | Where | What |
 |---|---|---|
-| 1 | X and Bluesky | The 10 s MP4 uploaded natively (not a link). Text: the one idea. Repo link in the first reply. |
-| 2 | Mastodon (#asciiart #terminal #rust) | Same clip, add alt text describing the scene. |
-| 3 | r/commandline, r/asciiart | The clip, title says what it is. Say it is open source, link in a comment. |
-| 4 | r/rust, r/unixporn | "How I made a terminal renderer that does not flicker" with the GIF. Read each sub's rules first. |
-| 5 | Hacker News "Show HN" | Title: "Show HN: An anime made of terminal text (Rust)". Post in the morning US time. Be present for 3 hours to answer. |
-| 7 | Your blog / dev.to | The technical story (below). |
+| Day 1 | X | The 10 s clip uploaded natively, with the two repeated lines. Repo link in the first reply. |
+| Day 3 | Bluesky and Mastodon | Same clip, alt text on. |
+| Week 2 | Reddit r/asciiart or r/commandline (after rules check and a few days of comments) | The clip. Title says what it is. Say it is yours and open source. Put the link in a comment. |
+| Week 2 or 3 | Reddit r/rust | The flicker story: "a renderer that draws lines and marks, so it does not flicker", with the GIF and the numbers. Technical, not "please give feedback". |
+| Week 4 or later | Hacker News | Show HN, only if the account has real comment history. Tuesday to Thursday, 8 to 10 am US Eastern. Stay for 3 hours. |
+| Any week | Blog / dev.to | The technical post below. |
 
 Rules for every post:
-- Be plain and honest. Say what is rough (the 3D figures are simple tubes). People trust that.
+- Be plain and honest. Say what is rough (tiny faces, simple backdrop). People trust that.
 - Reply to every comment in the first 24 hours. This matters more than the post.
 - Never ask for upvotes. Never post the same text twice in one place.
+- Do not make a second HN or Reddit account if one is restricted.
 - Credit the ideas you used (the rikiworld devlog). State: no code was copied, ideas only.
+- Do not make every post "please give feedback with a link". Show the work first, link second.
 
 ## The technical post (this is what builds trust with developers)
 Title: "Why most ASCII renderers flicker, and what I did instead".
